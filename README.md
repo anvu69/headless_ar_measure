@@ -24,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.3.0
+  headless_ar_measure: ^0.4.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -95,12 +95,20 @@ controller?.dispose();
 | `ArMeasureController.captureFrame()` | Writes the current camera frame to a JPEG in the temp directory and returns its path, or `null` |
 | `ArMeasureController.dispose()` | **Required.** Stops the session and turns the camera off |
 
-### The crosshair has to say whether it is on something
+### The crosshair has to say what it is on
 
-`ArMeasureSample.aimLocked` is `true` while a ray from the centre of the screen
-is hitting a surface — in other words, while a tap would actually place a point.
-Draw two crosshairs and swap between them on that flag, the way Apple's Measure
-app does. The user moves the phone until it locks, and then taps.
+`ArMeasureSample.aimTarget` is what a ray from the centre of the screen is
+hitting right now. Three answers, not two:
+
+| `aimTarget` | What a tap would do | What to draw |
+|---|---|---|
+| `existingPlaneGeometry` | land on a plane ARKit has confirmed | the confident crosshair |
+| `estimatedPlane` | land on a plane ARKit just guessed around the ray | a weaker crosshair — placeable, but the depth can be off |
+| `null` | **miss** | the empty crosshair, plus a line telling the user where to aim instead |
+
+`ArMeasureSample.aimLocked` is the older two-value form of the same probe
+(`aimTarget != null`), kept so existing code does not have to change. Both come
+from one raycast, so they cannot disagree.
 
 This is not polish. Without it, a miss and a broken button look identical: a
 real device, aimed at a glossy black tablet screen at close range — reflective,
@@ -108,10 +116,18 @@ untextured, near-zero feature points, the worst surface ARKit can be handed —
 produced a "Place" button that did nothing at all, with `ready` on screen the
 whole time. The ray was missing, correctly; nothing said so.
 
-The flag is probed with the **same** raycast `placePoint()` uses, at 10Hz,
-under a 0.3s grace period before it drops back to `false` so a marginal surface
-does not strobe it. It is always `false` outside `ready` and `firstPointPlaced`
-— once both points are down there is nothing left to aim at.
+It is probed with the **same** raycast `placePoint()` uses, and it is always
+`null` outside `ready` and `firstPointPlaced` — once both points are down there
+is nothing left to aim at.
+
+**There is no grace period, and that is a fix, not an omission.** Until 0.4.0
+the flag stayed `true` for 0.3s after the first missing probe, and every hit
+re-armed that window. On a surface that only catches now and then, a single hit
+every 0.3s pinned the crosshair to "locked" continuously while most taps missed
+— the user sees the lock, taps, misses, sees the lock again. On a real device
+that loop cost 130 seconds for the first point and 136 for the second. The
+value now always comes from a real raycast, at most one 10Hz sample old. It
+does flicker on a marginal surface; the flicker is the information.
 
 And when a tap does miss anyway, `placePoint()` says which kind of nothing
 happened:
@@ -184,6 +200,12 @@ field.
 | `cameraDistanceMm` | camera centre to the placed point |
 | `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing |
 | `planeAlignment`, `planeWidthMm`, `planeHeightMm` | the `ARPlaneAnchor` that was hit, if any. All three `null` when the hit landed on an estimated plane |
+
+`ArMeasureDiagnostics.video` sits beside those points and describes the whole
+session rather than one tap: the `width`, `height` and `fps` of the ARKit video
+format actually running. It is present **before any point exists**, which is
+when you most need it — that is the moment someone is asking why nothing can be
+placed. See "The video format is an experiment" below.
 
 Why it exists: a tile edge measured 382mm against a true 400, two tiles measured
 795 against 800, and every explanation anyone proposed fitted both numbers
@@ -262,6 +284,22 @@ session gives up on relocalization after five seconds by itself, and
 `max(5mm, 1.5%)` without. These are working assumptions, not measured
 constants — but a number shipped without a tolerance is a promise of precision
 the sensor cannot keep.
+
+### The video format is an experiment
+
+Since 0.4.0 the session picks the **highest-resolution** entry of
+`ARWorldTrackingConfiguration.supportedVideoFormats` instead of taking Apple's
+default (ties go to the higher frame rate; an empty list leaves the default
+alone). The hypothesis is plain: ARKit pulls feature points out of the camera
+image, so more pixels should mean more points on the poorly textured surfaces
+where planes currently refuse to grow.
+
+It is a hypothesis, not a promise. The highest-resolution format on some devices
+runs at 30fps where the default runs at 60, and half the frames is half the
+world updates — which could eat the gain, or more. That is why
+`ArMeasureDiagnostics.video` reports `fps` alongside the resolution: show it on
+screen during a device run. **If the frame rate drops and the wait does not,
+this should be reverted.**
 
 ## It never throws
 

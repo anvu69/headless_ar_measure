@@ -1,3 +1,46 @@
+## 0.4.0
+
+A crosshair that says "locked" while a tap would miss is worse than a crosshair
+that says nothing. This release removes one such lie and adds the resolution the
+old flag was hiding.
+
+* **`ArMeasureSample.aimTarget`** — what the centre ray is hitting right now,
+  as an `ArRaycastTarget?`: `existingPlaneGeometry` (a plane ARKit has
+  confirmed), `estimatedPlane` (one it guessed around the ray), or `null` for
+  nothing at all. `aimLocked` stays as the two-value form of the same probe
+  (`aimTarget != null`), so existing code keeps working. Both are derived from
+  one raycast; they cannot disagree.
+* **The 0.3s unlock grace period is gone.** It was not a debounce: every hit
+  re-armed the window, so it behaved as an OR across it. A surface that catches
+  once every 0.3s — one probe in three — pinned the crosshair to "locked"
+  continuously while most taps missed. Measured on an iPhone 16 Plus (no LiDAR)
+  against a table edge on a black mousepad: 130 seconds to land the first point,
+  136 for the second, both eventually landing on confirmed plane geometry. The
+  quality was never the problem; the waiting was, and the crosshair was
+  encouraging it.
+* What replaces it is a **sampling grid**, not a hold: the value always comes
+  from a real raycast, at most one 10Hz sample old. The grid exists only because
+  the probe runs every frame while a live segment is on screen, and a shape that
+  changes 60 times a second reads as no state at all. On a marginal surface the
+  crosshair now flickers — that flicker is the information the old constant was
+  suppressing.
+* **`ArMeasureDiagnostics.video`** — `width`, `height` and `fps` of the ARKit
+  video format actually in use. It rides on every sample, including samples with
+  no points yet, because "why can I not place anything" is a question asked
+  before the first point exists.
+
+**Experimental, not yet verified on a device:** the session now selects the
+highest-resolution `supportedVideoFormats` entry instead of Apple's default,
+on the hypothesis that more pixels yield more feature points on the untextured
+surfaces where planes currently refuse to grow. Ties go to the higher frame
+rate, and an empty list leaves the default in place. The risk is real and is why
+`fps` is reported: the highest-resolution format on some devices runs at 30fps
+where the default runs at 60. **If a device run shows the frame rate dropping
+without the wait shrinking, revert this.**
+
+Also not verified on a device: whether the honest crosshair reads as broken
+rather than informative when a surface only catches intermittently.
+
 ## 0.3.0
 
 A photo of a measurement is a different artefact from a measurement. It outlives

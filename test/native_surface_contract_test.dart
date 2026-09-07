@@ -158,10 +158,10 @@ void main() {
 
   group('tâm ngắm tự nói', () {
     test('lượt dò dùng ĐÚNG tia mà placePoint dùng', () {
-      // Lượt dò đã dời từ `refreshAimLock` sang `probeReticle` khi đoạn thẳng
-      // sống vào: nay có HAI thứ đọc cùng một lượt dò — một cờ và một vị trí —
-      // nên lượt raycast phải nằm ở một chỗ cả hai cùng gọi. Luật thì không đổi
-      // một chữ, chỉ đổi chỗ canh.
+      // Lượt dò đã dời từ `refreshAimTarget` sang `probeReticle` khi đoạn thẳng
+      // sống vào: nay có HAI thứ đọc cùng một lượt dò — một tầng và một vị trí
+      // — nên lượt raycast phải nằm ở một chỗ cả hai cùng gọi. Luật thì không
+      // đổi một chữ, chỉ đổi chỗ canh.
       expect(
         _swiftMethodBody(sessionSource, 'private func probeReticle('),
         contains('raycastFromReticle()'),
@@ -184,7 +184,7 @@ void main() {
       );
 
       expect(body, contains('let probe = probeReticle(now: now)'));
-      expect(body, contains('refreshAimLock(now: now, probe: probe)'));
+      expect(body, contains('refreshAimTarget(now: now, probe: probe)'));
       expect(
         'raycastFromReticle()'.allMatches(body).length,
         0,
@@ -201,7 +201,7 @@ void main() {
 
       expect(
         body,
-        contains('refreshAimLock('),
+        contains('refreshAimTarget('),
         reason:
             'Đây là nguồn khung hình duy nhất của lớp. Bản trước chặn sớm bằng '
             '`guard anchors.count == 2` — tức là ở đúng quãng người dùng còn '
@@ -209,7 +209,7 @@ void main() {
             'ngắm không bao giờ nói được gì.',
       );
       expect(
-        body.indexOf('refreshAimLock('),
+        body.indexOf('refreshAimTarget('),
         lessThan(body.indexOf('anchors.count == 2')),
         reason:
             'Lượt dò phải chạy trước lối rẽ hai điểm. Đặt sau thì nó nằm trong '
@@ -235,13 +235,114 @@ void main() {
         sessionSource.replaceAll(RegExp(r'\s+'), ' '),
         contains(
           'if !force, status == lastStatus, '
-          'limitedReason == lastLimitedReason, aimLocked == lastAimLocked {',
+          'limitedReason == lastLimitedReason, aimTarget == lastAimTarget {',
         ),
         reason:
-            'Bộ giãn nhịp neo vào "số đo đổi quá 0,5 mm". Cờ ngắm đổi từ false '
-            'sang true KHÔNG đổi số đo nào — chưa có điểm nào để đo — nên nếu '
-            'nó không nằm trong điều kiện gộp này thì lượt khoá đầu tiên bị '
-            'nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói nhất.',
+            'Bộ giãn nhịp neo vào "số đo đổi quá 0,5 mm". Tầng ngắm đổi KHÔNG '
+            'đổi số đo nào — phần lớn thời gian chưa có điểm nào để đo — nên '
+            'nếu nó không nằm trong điều kiện gộp này thì lượt bắt được bề mặt '
+            'đầu tiên bị nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói nhất. '
+            'So theo `aimTarget` chứ không theo `aimLocked`: cờ suy ra từ tầng, '
+            'nên đổi từ `estimatedPlane` sang `existingPlaneGeometry` không đổi '
+            'cờ một chút nào — mà đó là đúng lượt tâm ngắm phải đổi hình.',
+      );
+    });
+
+    /// Việc A: quãng ân hạn của cờ ngắm đã BỎ HẲN.
+    ///
+    /// Bản trước giữ cờ "đã khoá" thêm 0,3 s sau lượt dò trượt đầu tiên, và
+    /// mỗi lượt TRÚNG lại nạp lại quãng ấy từ đầu. Hệ quả đo được trên máy
+    /// thật (iPhone 16 Plus, mép bàn, tấm lót chuột đen): một bề mặt chỉ trúng
+    /// một lần trong mỗi 0,3 s vẫn giữ tâm ngắm ở hình "đã khoá" LIÊN TỤC,
+    /// trong khi bốn trên năm cú bấm trượt. Người dùng thấy dấu khoá nên bấm,
+    /// bấm thì trượt, rồi lặp lại — 130 giây cho điểm thứ nhất.
+    test('cờ ngắm KHÔNG có quãng ân hạn nào', () {
+      expect(
+        sessionSource,
+        isNot(contains('aimUnlockGraceSeconds')),
+        reason:
+            'Một quãng ân hạn NẠP LẠI ở mỗi lượt trúng không phải một bộ lọc '
+            'chống nhấp nháy — nó là một phép HOẶC trên cả cửa sổ: một lượt '
+            'trúng lẻ trong cửa sổ đủ để tâm ngắm nói "khoá" suốt cửa sổ ấy. '
+            'Đó là lời hứa hão mà chính chú thích của hằng số này tự phá.',
+      );
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func refreshAimTarget('),
+        ),
+        isNot(contains('lastAimHitAt')),
+        reason:
+            'Mốc "lần dò gần nhất TRÚNG" chỉ có một công dụng: kéo dài một lời '
+            'hứa đã hết hạn. Còn nó là còn đường quay lại quãng ân hạn.',
+      );
+    });
+
+    test('cờ ngắm lấy mẫu theo LƯỚI nhịp dò, không theo 60 Hz của đoạn sống', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func refreshAimTarget('),
+      );
+
+      expect(
+        body,
+        contains('aimProbeIntervalSeconds'),
+        reason:
+            'Đang có đoạn thẳng sống thì [probeReticle] dò MỖI khung hình — 60 '
+            'lượt/giây. Cho cờ đi thẳng theo đó là một tâm ngắm nhấp nháy 60 '
+            'lần/giây, thứ mắt không đọc ra được trạng thái nào cả. Cửa sổ duy '
+            'nhất còn lại là nhịp dò 10 Hz, và nó KHÔNG nạp lại theo lượt '
+            'trúng: cờ luôn bằng kết quả của một lượt raycast thật, cũ nhiều '
+            'nhất một nhịp.',
+      );
+      expect(
+        body,
+        contains('lastAimSampleAt'),
+        reason:
+            'Lưới lấy mẫu phải có mốc RIÊNG. Mượn `lastAimProbeAt` thì ở nhánh '
+            'đoạn sống (dò mỗi khung) mốc ấy nhích theo từng khung hình và cửa '
+            'sổ không bao giờ đóng — tức là quay về đúng 60 Hz.',
+      );
+    });
+
+    /// Việc B: tầng của tia HIỆN TẠI, không phải tầng của một điểm đã chấm.
+    test('tầng tia đọc từ MỘT chỗ, dùng chung cho chẩn đoán và tâm ngắm', () {
+      expect(
+        sessionSource,
+        contains(
+          'private static func raycastTarget(of hit: ARRaycastResult) -> ArRaycastTarget?',
+        ),
+        reason:
+            'Hai chỗ cần đúng một phép dịch `ARRaycastResult.target` sang '
+            '`ArRaycastTarget`: chẩn đoán của một điểm ĐÃ chấm, và tầng của tia '
+            'ĐANG ngắm. Chép nó ra chỗ thứ hai là mở đường cho dải chẩn đoán và '
+            'tâm ngắm nói hai chuyện khác nhau về cùng một lượt raycast.',
+      );
+      for (final signature in [
+        'private func makeDiagnostics(',
+        'private func probeReticle(',
+      ]) {
+        expect(
+          _withoutComments(_swiftMethodBody(sessionSource, signature)),
+          contains('Self.raycastTarget(of:'),
+          reason: '`$signature` phải đi qua bản dịch dùng chung.',
+        );
+      }
+    });
+
+    test('tầng tia đang ngắm đi lên Dart, không chỉ có cờ trúng/trượt', () {
+      expect(
+        sessionSource,
+        contains('sample["aimTarget"]'),
+        reason:
+            'Một cờ boolean gộp "trúng mặt phẳng đã xác nhận" với "trúng mặt '
+            'phẳng ARKit đoán ra" thành cùng một hình tâm ngắm. Đó là hai mức '
+            'tin cậy khác hẳn nhau, và người dùng cần thấy khác nhau TRƯỚC cú '
+            'bấm chứ không phải sau nó.',
+      );
+      expect(
+        dartSource,
+        contains("raw['aimTarget']"),
+        reason:
+            'Cùng cái hỏng câm, ngược chiều: Swift vẫn gửi, và không ai nhận.',
       );
     });
   });
@@ -362,9 +463,9 @@ void main() {
         reason:
             'Giữ điểm cũ là để một đoạn thẳng ĐỨNG YÊN trên màn giữa lúc người '
             'dùng vẫn đang rê máy — và một đoạn đứng yên đọc ra "đã chấm xong". '
-            'Ở đây khác cờ tâm ngắm: cờ có quãng ân hạn 0,3 s để khỏi nhấp nháy, '
-            'còn đoạn thẳng thì không, vì nó nói ra một VỊ TRÍ chứ không phải '
-            'một trạng thái.',
+            'Ở đây khác tầng tâm ngắm: tầng lấy mẫu trên lưới 10 Hz để mắt đọc '
+            'kịp, còn đoạn thẳng thì đi theo từng khung hình, vì nó nói ra một '
+            'VỊ TRÍ chứ không phải một trạng thái.',
       );
     });
 
@@ -464,8 +565,13 @@ void main() {
     });
 
     test('tầng trúng đọc THẲNG từ kết quả, không suy từ vòng lặp', () {
+      // Phép dịch đã dời sang [raycastTarget(of:)] khi tâm ngắm cần cùng một
+      // tầng cho tia ĐANG ngắm. Luật không đổi một chữ, chỉ đổi chỗ canh.
       expect(
-        _swiftMethodBody(sessionSource, 'private func makeDiagnostics('),
+        _swiftMethodBody(
+          sessionSource,
+          'private static func raycastTarget(of hit: ARRaycastResult)',
+        ),
         contains('hit.target'),
         reason:
             'Suy từ thứ tự vòng lặp trong `raycastFromReticle` là chép lại một '
@@ -612,6 +718,73 @@ void main() {
             'của ARKit đã ăn lưới qua `sceneReconstruction`. `.personSegmentation` '
             'là che khuất người, mà gói không có gì để che. Không cái nào làm '
             'tia trúng thêm một lần nào.',
+      );
+    });
+
+    /// Việc C: chọn khuôn hình phân giải cao nhất máy hỗ trợ.
+    ///
+    /// PHÉP THỬ, chưa nghiệm thu trên máy. Giả thuyết: ảnh phân giải cao hơn
+    /// cho ARKit nhiều điểm đặc trưng hơn, nên mặt phẳng mọc nhanh hơn trên bề
+    /// mặt nghèo vân — đúng cảnh đã làm người dùng chờ 130 giây. Cái giá có thể
+    /// là nhịp khung tụt (4K@30 thay cho 1440p@60), nên nhịp ấy phải in ra
+    /// được ở dải chẩn đoán, và tụt thì bỏ.
+    test('đặt videoFormat tường minh, không lấy mặc định', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func makeConfiguration('),
+      );
+
+      expect(
+        body,
+        contains('ARWorldTrackingConfiguration.supportedVideoFormats'),
+        reason:
+            'Không đặt gì là lấy khuôn mặc định của Apple, và mặc định ấy chọn '
+            'theo cân bằng chung chứ không theo cái việc gói này làm — rút điểm '
+            'đặc trưng từ một bề mặt nghèo vân ở cự ly 0,3–3 m.',
+      );
+      expect(
+        body,
+        contains('config.videoFormat ='),
+        reason: 'Đọc danh sách mà không gán thì không có gì đổi.',
+      );
+      expect(
+        body,
+        contains('.max(by:'),
+        reason:
+            'Danh sách RỖNG là một khả năng thật (máy ảo, một bản iOS sau). '
+            '`max(by:)` trả `nil` ở đó và `if let` bỏ qua — phòng hờ nằm ngay '
+            'trong phép chọn, không phải một nhánh riêng ai đó quên.',
+      );
+    });
+
+    test('khuôn hình đang dùng đi lên chẩn đoán, kèm nhịp khung', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(
+            sessionSource,
+            'private func runSession(options: ARSession.RunOptions)',
+          ),
+        ),
+        contains('config.videoFormat'),
+        reason:
+            'Số phải đọc TỪ cấu hình sau khi đã gán, không phải từ khuôn mình '
+            'vừa chọn: hai thứ ấy khác nhau đúng ở cái ca đáng quan tâm nhất — '
+            'danh sách rỗng, phép gán không xảy ra, và máy đang chạy khuôn mặc '
+            'định. Báo cáo khuôn mình MUỐN thay vì khuôn đang CHẠY là bịa ra '
+            'bằng chứng cho chính phép thử này.',
+      );
+      for (final key in ['width', 'height', 'fps']) {
+        expect(
+          sessionSource,
+          contains('"$key"'),
+          reason:
+              'Thiếu `$key` thì lượt thử máy thật không nói được nó có tác dụng '
+              'gì — nhất là `fps`, con số quyết định giữ hay bỏ phép thử.',
+        );
+      }
+      expect(
+        dartSource,
+        contains("raw['video']"),
+        reason: 'Swift gửi mà Dart không đọc thì dải chẩn đoán vẫn trống.',
       );
     });
 

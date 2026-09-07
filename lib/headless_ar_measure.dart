@@ -179,15 +179,43 @@ class ArPointDiagnostics {
   final double? planeHeightMm;
 }
 
-/// Chẩn đoán của cả phép đo: mỗi điểm một mục, theo ĐÚNG thứ tự chấm.
+/// Khuôn hình ARKit đang CHẠY — chuyện của cả phiên, không phải của một điểm.
 ///
-/// [points] có một mục khi mới chấm điểm đầu, hai mục khi đã đủ hai. Không bao
-/// giờ rỗng — mẫu không có điểm nào thì [ArMeasureSample.diagnostics] là `null`
-/// chứ không phải một danh sách rỗng.
+/// Có mặt vì một PHÉP THỬ: gói chọn khuôn phân giải cao nhất máy hỗ trợ, với
+/// giả thuyết rằng nhiều điểm ảnh cho ARKit nhiều điểm đặc trưng hơn trên bề
+/// mặt nghèo vân. Ba con số dưới đây là thứ duy nhất nói được phép thử ấy có
+/// tác dụng gì trên một máy thật — nhất là [fps], vì khuôn phân giải cao nhất
+/// trên một số máy chạy 30 khung/s thay cho 60, và nửa số khung có thể ăn hết
+/// phần vừa được.
+///
+/// **Mọi trường có thể `null`**, cùng lối với [ArPointDiagnostics]: một bản
+/// Swift cũ hơn phép thử này không gửi gì cả.
+class ArVideoFormat {
+  const ArVideoFormat({this.width, this.height, this.fps});
+
+  /// Độ phân giải ảnh camera ARKit đang lấy, tính bằng điểm ảnh.
+  final int? width;
+  final int? height;
+
+  /// Số khung hình mỗi giây của khuôn ấy — **nhịp danh nghĩa của khuôn**, không
+  /// phải nhịp đo được lúc chạy. Máy nóng hay CPU đầy làm nhịp thật tụt xuống
+  /// dưới con số này, và không có gì ở đây nói ra chuyện đó.
+  final int? fps;
+}
+
+/// Chẩn đoán: điều kiện của mỗi điểm đã chấm, cộng khuôn hình của cả phiên.
+///
+/// [points] có một mục khi mới chấm điểm đầu, hai mục khi đã đủ hai, và **rỗng**
+/// khi chưa chấm gì mà tầng nền vẫn có chuyện để nói ([video]). Cả khối là
+/// `null` khi tầng nền không nói được gì cả.
 class ArMeasureDiagnostics {
-  const ArMeasureDiagnostics({required this.points});
+  const ArMeasureDiagnostics({required this.points, this.video});
 
   final List<ArPointDiagnostics> points;
+
+  /// Khuôn hình đang chạy. `null` trước lượt `run` đầu tiên, và trên một bản
+  /// Swift cũ hơn phép thử ấy.
+  final ArVideoFormat? video;
 }
 
 /// Máy này chạy được ARKit tới đâu.
@@ -212,6 +240,7 @@ class ArMeasureSample {
     this.limitedReason,
     this.recoverable = true,
     this.aimLocked = false,
+    this.aimTarget,
     this.diagnostics,
   });
 
@@ -257,7 +286,30 @@ class ArMeasureSample {
   ///
   /// Mặc định `false`: thiếu khoá nghĩa là chưa bám, tức là hình tâm ngắm an
   /// toàn (rỗng, còn phải rê tiếp).
+  ///
+  /// Suy ra từ [aimTarget] ở tầng nền (`!= nil`), nên hai trường này không bao
+  /// giờ nói hai chuyện khác nhau — trừ một đường: một bản Swift cũ hơn
+  /// [aimTarget] gửi cờ mà không gửi tầng.
   final bool aimLocked;
+
+  /// Tia bắn từ tâm màn đang trúng TẦNG nào. `null` là không trúng gì.
+  ///
+  /// Ba cảnh, không phải hai — và [aimLocked] chỉ tách được hai:
+  ///
+  /// * [ArRaycastTarget.existingPlaneGeometry] — điểm nằm trên một mặt phẳng
+  ///   ARKit **đã xác nhận**. Chấm ở đây là chắc nhất gói có.
+  /// * [ArRaycastTarget.estimatedPlane] — ARKit **đoán** một mặt phẳng từ hình
+  ///   học quanh tia. Chấm được, nhưng cao độ có thể lệch, và trên máy không có
+  ///   LiDAR thì lệch nhiều hơn hẳn.
+  /// * `null` — không trúng gì. Cú bấm ngay bây giờ sẽ **trượt**.
+  ///
+  /// Dùng nó để tâm ngắm nói ba chuyện khác nhau. Gộp hai tầng đầu vào một hình
+  /// là giấu đúng phần người dùng cần: một điểm trên mặt ước lượng trông y hệt
+  /// một điểm chắc chắn, cho tới lúc con số cuối cùng lệch.
+  ///
+  /// `null` cũng là đường của một bản Swift cũ hơn trường này. Hai đường đổ về
+  /// cùng một chỗ có chủ đích: cả hai đều là "không có tầng nào để bày".
+  final ArRaycastTarget? aimTarget;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -499,9 +551,22 @@ class ArMeasure {
       limitedReason: limitedReason,
       recoverable: recoverable,
       aimLocked: aimLocked,
+      // Chuỗi lạ về `null` chứ không giết mẫu, y như `limitedReason`: ARKit có
+      // thể thêm một tầng ở bản iOS sau, và mất cả mẫu vì một trường trang trí
+      // là để màn đo đứng im ở khung hình cuối.
+      aimTarget: _parseRaycastTarget(raw['aimTarget']),
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
+
+  /// Đọc một tầng tia. Dùng chung cho tia ĐANG ngắm và cho chẩn đoán của một
+  /// điểm ĐÃ chấm — một bảng dịch, không phải hai bản chép lệch nhau được.
+  static ArRaycastTarget? _parseRaycastTarget(Object? raw) => switch (raw) {
+    'existingPlaneGeometry' => ArRaycastTarget.existingPlaneGeometry,
+    'existingPlaneInfinite' => ArRaycastTarget.existingPlaneInfinite,
+    'estimatedPlane' => ArRaycastTarget.estimatedPlane,
+    _ => null,
+  };
 
   /// Đọc khối chẩn đoán. **Không bao giờ ném, và không bao giờ giết mẫu.**
   ///
@@ -510,22 +575,47 @@ class ArMeasure {
   /// vì một trường không ai nhìn.
   static ArMeasureDiagnostics? _parseDiagnostics(Object? raw) {
     if (raw is! Map) return null;
-    final rawPoints = raw['points'];
-    if (rawPoints is! List) return null;
-    if (rawPoints.isEmpty) return null;
 
+    final rawPoints = raw['points'];
     // Phần tử hỏng thành một điểm TRỐNG, không bị loại khỏi danh sách. Loại nó
     // ra là điểm thứ hai trượt lên chỗ điểm thứ nhất, và cả dải chẩn đoán nói
     // dối về việc điểm nào được chấm trong điều kiện nào — im lặng, và người
     // đọc không có cách nào biết.
-    return ArMeasureDiagnostics(
-      points: rawPoints
-          .map(
-            (Object? p) => p is Map
-                ? _parsePointDiagnostics(Map<Object?, Object?>.from(p))
-                : const ArPointDiagnostics(),
-          )
-          .toList(growable: false),
+    final points = rawPoints is List
+        ? rawPoints
+              .map(
+                (Object? p) => p is Map
+                    ? _parsePointDiagnostics(Map<Object?, Object?>.from(p))
+                    : const ArPointDiagnostics(),
+              )
+              .toList(growable: false)
+        : const <ArPointDiagnostics>[];
+
+    final video = _parseVideoFormat(raw['video']);
+
+    // Không có điểm nào VÀ không có khuôn hình nào thì cả khối về `null`, không
+    // phải một đối tượng rỗng: rỗng đọc ra "đã đo và không có gì", còn `null`
+    // đọc đúng nghĩa "bản nền này không nói". Nhưng chỉ một trong hai có mặt là
+    // ĐỦ để khối tồn tại — khuôn hình có nghĩa từ trước khi có điểm nào, và đó
+    // đúng là lúc người ta cần nó.
+    if (points.isEmpty && video == null) return null;
+
+    return ArMeasureDiagnostics(points: points, video: video);
+  }
+
+  /// Đọc khuôn hình. Mọi trường sai kiểu hay thiếu về `null`, và một map hỏng
+  /// KHÔNG giết cả khối chẩn đoán.
+  static ArVideoFormat? _parseVideoFormat(Object? raw) {
+    if (raw is! Map) return null;
+
+    final rawWidth = raw['width'];
+    final rawHeight = raw['height'];
+    final rawFps = raw['fps'];
+
+    return ArVideoFormat(
+      width: rawWidth is num ? rawWidth.round() : null,
+      height: rawHeight is num ? rawHeight.round() : null,
+      fps: rawFps is num ? rawFps.round() : null,
     );
   }
 
@@ -539,12 +629,7 @@ class ArMeasure {
     final rawHeight = raw['planeHeightMm'];
 
     return ArPointDiagnostics(
-      target: switch (raw['target']) {
-        'existingPlaneGeometry' => ArRaycastTarget.existingPlaneGeometry,
-        'existingPlaneInfinite' => ArRaycastTarget.existingPlaneInfinite,
-        'estimatedPlane' => ArRaycastTarget.estimatedPlane,
-        _ => null,
-      },
+      target: _parseRaycastTarget(raw['target']),
       tracking: switch (raw['tracking']) {
         'normal' => ArTrackingSnapshot.normal,
         'limitedInitializing' => ArTrackingSnapshot.limitedInitializing,

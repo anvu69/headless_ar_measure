@@ -181,6 +181,52 @@ void main() {
       expect(s?.status, ArMeasureStatus.ready);
       expect(s?.aimLocked, isFalse);
     });
+
+    // Cờ trúng/trượt gộp hai mức tin cậy rất khác nhau vào một hình tâm ngắm:
+    // "nằm trên mặt phẳng ARKit đã xác nhận" và "nằm trên mặt phẳng ARKit vừa
+    // đoán ra quanh tia". Người dùng cần thấy khác nhau TRƯỚC cú bấm.
+    test('aimTarget đọc được cả hai tầng tia gói bắn ra', () {
+      final geometry = ArMeasure.parseSample({
+        'status': 'ready',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneGeometry',
+      });
+      final estimated = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'aimLocked': true,
+        'aimTarget': 'estimatedPlane',
+      });
+
+      expect(geometry?.aimTarget, ArRaycastTarget.existingPlaneGeometry);
+      expect(estimated?.aimTarget, ArRaycastTarget.estimatedPlane);
+    });
+
+    // Thiếu khoá = tia không trúng gì, và đó cũng là đường của một bản Swift cũ
+    // hơn tầng này. Hai đường cùng đổ về `null` có chủ đích: cả hai đều nghĩa
+    // là "không có tầng nào để bày", và màn phải vẽ ra cùng một thứ.
+    test('thiếu aimTarget thì về null, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({'status': 'ready', 'aimLocked': true});
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimLocked, isTrue);
+      expect(s?.aimTarget, isNull);
+    });
+
+    test('aimTarget lạ hay sai kiểu không ném, về null', () {
+      late ArMeasureSample? la;
+      late ArMeasureSample? saiKieu;
+      expect(() {
+        la = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'mot-tang-moi-cua-iOS-sau',
+        });
+        saiKieu = ArMeasure.parseSample({'status': 'ready', 'aimTarget': 7});
+      }, returnsNormally);
+
+      expect(la?.status, ArMeasureStatus.ready);
+      expect(la?.aimTarget, isNull);
+      expect(saiKieu?.aimTarget, isNull);
+    });
   });
 
   /// Chẩn đoán: ảnh chụp của ĐIỀU KIỆN mỗi điểm được chấm.
@@ -267,6 +313,71 @@ void main() {
       });
 
       expect(s?.diagnostics, isNull);
+    });
+
+    // Khuôn hình là chuyện của cả PHIÊN, không phải của một điểm — và nó phải
+    // đọc được TRƯỚC khi có điểm nào, vì đó đúng là lúc người ta cần biết vì
+    // sao chưa chấm nổi điểm nào.
+    test('khuôn hình đang chạy đọc được khi chưa có điểm nào', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'video': {'width': 1920, 'height': 1440, 'fps': 60},
+        },
+      });
+
+      expect(s?.diagnostics, isNotNull);
+      expect(s?.diagnostics?.points, isEmpty);
+      expect(s?.diagnostics?.video?.width, 1920);
+      expect(s?.diagnostics?.video?.height, 1440);
+      expect(s?.diagnostics?.video?.fps, 60);
+    });
+
+    test('khuôn hình đi cùng chẩn đoán từng điểm, không loại nhau', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+          'video': {'width': 3840, 'height': 2160, 'fps': 30},
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+      expect(s?.diagnostics?.video?.width, 3840);
+      expect(s?.diagnostics?.video?.fps, 30);
+    });
+
+    test('thiếu khuôn hình thì về null, chẩn đoán điểm vẫn sống', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+      expect(s?.diagnostics?.video, isNull);
+    });
+
+    test('khuôn hình sai kiểu không ném, ba ô về null', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'video': {
+              'width': 'rong',
+              'height': null,
+              'fps': <int>[60],
+            },
+          },
+        });
+      }, returnsNormally);
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.diagnostics?.video?.width, isNull);
+      expect(s?.diagnostics?.video?.height, isNull);
+      expect(s?.diagnostics?.video?.fps, isNull);
     });
 
     test('mặt ước lượng: không có mặt phẳng nào, ba khoá mp về null', () {

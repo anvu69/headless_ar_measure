@@ -179,7 +179,7 @@ protocol ArMeasureSessionOutput: AnyObject {
 ///
 /// Bốn nhánh, và ba nhánh đầu KHÔNG gộp được vào một `SIMD3<Float>?`: "chưa tới
 /// nhịp dò" khác hẳn "vừa dò và trượt". Gộp lại thì mỗi lượt bị giãn nhịp đọc ra
-/// một lượt trượt, và cờ tâm ngắm tắt phụt sau 0,3 s đứng yên.
+/// một lượt trượt, và tâm ngắm tắt phụt mỗi lần khung hình tới sớm.
 private enum ArReticleProbe {
   /// Trạng thái phiên không cho chấm điểm — không dò, và mọi thứ suy ra từ tia
   /// đều hết nghĩa.
@@ -188,8 +188,12 @@ private enum ArReticleProbe {
   /// Chưa tới nhịp dò kế tiếp. Giữ nguyên mọi thứ của lượt trước.
   case skipped
 
-  /// Trúng, kèm vị trí trong hệ toạ độ thế giới.
-  case hit(SIMD3<Float>)
+  /// Trúng, kèm vị trí trong hệ toạ độ thế giới và TẦNG tia đã trúng.
+  ///
+  /// Tầng đi kèm chứ không suy lại sau: nó chỉ tồn tại trong `ARRaycastResult`
+  /// của đúng lượt dò này, và hai tầng mang hai mức tin cậy khác hẳn nhau —
+  /// mặt phẳng ARKit đã xác nhận, so với mặt phẳng nó vừa đoán ra quanh tia.
+  case hit(SIMD3<Float>, ArRaycastTarget?)
 
   /// Đã dò và không trúng gì.
   case missed
@@ -482,17 +486,25 @@ final class ArMeasureSession: NSObject {
   /// sửa là đúng hằng số này, không phải cấu trúc quanh nó.
   private static let aimProbeIntervalSeconds: TimeInterval = 1.0 / 10.0
 
-  /// Trượt liên tiếp bao lâu thì mới HẠ cờ ngắm.
-  ///
-  /// Bất đối xứng có chủ đích: khoá thì khoá ngay ở lượt dò trúng đầu tiên,
-  /// nhưng mở khoá thì phải trượt suốt quãng này. Không có nó, một bề mặt ở
-  /// ranh giới (mép giấy, vân gỗ mờ) cho ra một chuỗi trúng-trượt-trúng và tâm
-  /// ngắm **nhấp nháy 10 lần một giây** — khó đọc hơn hẳn một tâm ngắm đứng yên
-  /// ở một trong hai hình.
-  ///
-  /// 0,3 s là ba lượt dò trượt liên tiếp, và nằm dưới quãng phản xạ của người
-  /// (~0,4 s) nên nó không làm chậm được cú bấm nào.
-  private static let aimUnlockGraceSeconds: TimeInterval = 0.3
+  // Không còn hằng số "ân hạn" nào ở đây, và chỗ trống này là có chủ đích.
+  //
+  // Bản trước giữ cờ "đã khoá" thêm 0,3 s sau lượt dò trượt đầu tiên, với lý lẽ
+  // rằng nó chống nhấp nháy trên bề mặt ranh giới. Lý lẽ ấy sai ở một chỗ đo
+  // được: quãng ân hạn NẠP LẠI ở mỗi lượt trúng, nên nó không phải một bộ lọc
+  // trễ — nó là một phép HOẶC trải trên cả cửa sổ. Một bề mặt chỉ trúng một lần
+  // trong mỗi 0,3 s (tức là 1 trên 3 lượt dò, hoặc 1 trên 18 khung hình ở nhánh
+  // dò mỗi khung) vẫn giữ tâm ngắm ở hình "đã khoá" LIÊN TỤC, trong khi phần
+  // lớn cú bấm rơi vào những khoảnh khắc tia đang trượt.
+  //
+  // Đó chính là cảnh máy thật báo về: iPhone 16 Plus (không LiDAR) đo mép bàn
+  // trên tấm lót chuột đen phẳng — 130 giây cho điểm thứ nhất, 136 giây cho
+  // điểm thứ hai. Người dùng thấy dấu khoá nên bấm, bấm thì trượt, thấy dấu
+  // khoá nên bấm lại. Cái nhấp nháy mà hằng số kia đi chữa là THÔNG TIN: nó nói
+  // đúng rằng chỗ này chỉ bám được từng lúc.
+  //
+  // Thứ thay thế nó nằm ở [refreshAimTarget]: cờ lấy MẪU trên lưới
+  // [aimProbeIntervalSeconds], và mẫu là kết quả của một lượt raycast thật chứ
+  // không phải một lời hứa đã hết hạn còn được gia hạn.
 
   // MARK: - Trạng thái
 
@@ -546,25 +558,34 @@ final class ArMeasureSession: NSObject {
   private var relocalizationWatch: DispatchWorkItem?
   private var trailingEmit: DispatchWorkItem?
 
-  /// Tia bắn từ tâm ngắm ĐANG trúng một bề mặt hay không.
+  /// Tia bắn từ tâm ngắm ĐANG trúng gì. `nil` là không trúng gì cả.
   ///
   /// Đây là thứ duy nhất nói trước cho người dùng biết cú bấm sắp tới sẽ đặt
-  /// được điểm hay rơi vào chỗ trống. Xem [refreshAimLock].
-  private var aimLocked = false
+  /// được điểm hay rơi vào chỗ trống — và nói ở BA mức, không phải hai: trúng
+  /// mặt phẳng đã xác nhận, trúng mặt phẳng ARKit vừa đoán ra, không trúng gì.
+  /// Cờ `aimLocked` cũ suy ra từ đây (`!= nil`), nên hai thứ không thể lệch.
+  /// Xem [refreshAimTarget].
+  private var aimTarget: ArRaycastTarget?
 
-  /// Lần dò gần nhất TRÚNG, để tính quãng ân hạn khi hạ cờ.
-  private var lastAimHitAt: TimeInterval = 0
+  /// Lần LẤY MẪU cờ ngắm gần nhất, để giãn nhịp đổi hình tâm ngắm.
+  ///
+  /// Mốc RIÊNG, không mượn [lastAimProbeAt]: ở nhánh đang có đoạn thẳng sống,
+  /// [probeReticle] dò mỗi khung hình và nhích mốc kia theo từng khung, nên
+  /// mượn nó là cửa sổ không bao giờ đóng — tức là tâm ngắm đổi hình 60
+  /// lần/giây.
+  private var lastAimSampleAt: TimeInterval = 0
 
   /// Lần dò gần nhất CHẠY, để giãn nhịp dò.
   private var lastAimProbeAt: TimeInterval = 0
 
   /// Vị trí tia tâm ngắm đang trúng, hệ toạ độ thế giới. `nil` là không trúng gì.
   ///
-  /// Đây là đầu SỐNG của đoạn thẳng, và nó KHÔNG có quãng ân hạn như
-  /// [aimLocked]: trượt một lượt là xoá ngay. Hai thứ đọc cùng một lượt dò
-  /// nhưng nói hai chuyện khác nhau — cờ nói một TRẠNG THÁI ("bấm được rồi"),
-  /// và một trạng thái nhấp nháy 10 lần/giây thì khó đọc; điểm này nói một VỊ
-  /// TRÍ, và giữ lại vị trí cũ là vẽ một đoạn thẳng tới chỗ không còn gì.
+  /// Đây là đầu SỐNG của đoạn thẳng, và nó KHÔNG bị lưới lấy mẫu của
+  /// [aimTarget] chặn: trượt một lượt là xoá ngay, ở đúng khung hình ấy. Hai
+  /// thứ đọc cùng một lượt dò nhưng nói hai chuyện khác nhau — tầng nói một
+  /// TRẠNG THÁI ("bấm được rồi"), và một trạng thái đổi hình nhanh hơn 10
+  /// lần/giây thì mắt không đọc ra; điểm này nói một VỊ TRÍ, và giữ lại vị trí
+  /// cũ dù chỉ một nhịp là vẽ một đoạn thẳng tới chỗ không còn gì.
   ///
   /// [probeReticle] là chỗ DUY NHẤT ghi vào biến này.
   private var liveHitPoint: SIMD3<Float>?
@@ -576,9 +597,13 @@ final class ArMeasureSession: NSObject {
   /// Mốc lần bắn lớp phủ gần nhất, để giãn nhịp 30 Hz.
   private var lastOverlayEmitAt: TimeInterval = 0
 
+  /// Khuôn hình ARKit đang CHẠY, đã sẵn sàng cho kênh. `nil` là chưa `run` lần
+  /// nào. Xem [makeConfiguration] và [runSession].
+  private var videoFormat: [String: Any]?
+
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
-  private var lastAimLocked: Bool?
+  private var lastAimTarget: ArRaycastTarget?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
 
@@ -698,6 +723,36 @@ final class ArMeasureSession: NSObject {
       config.sceneReconstruction = .mesh
     }
 
+    // PHÉP THỬ, chưa nghiệm thu trên máy — xem CHANGELOG 0.4.0.
+    //
+    // Giả thuyết: ARKit rút điểm đặc trưng từ ẢNH camera, nên một khuôn hình
+    // phân giải cao hơn cho nhiều điểm hơn trên cùng một cảnh, và mặt phẳng mọc
+    // nhanh hơn ở đúng chỗ nó đang không mọc — bề mặt tối, trơn, không vân.
+    // Bản trước không đặt gì và lấy khuôn mặc định của Apple; mặc định ấy cân
+    // bằng cho mọi app AR, không cân bằng cho việc chấm một điểm lên mép bàn.
+    //
+    // Cái giá có thể có, và nó là lý do `fps` phải đi lên chẩn đoán: khuôn phân
+    // giải cao nhất trên một số máy chạy 30 khung/s thay vì 60. Nửa số khung là
+    // nửa số lượt ARKit cập nhật thế giới, và điều đó có thể ăn hết phần vừa
+    // được — hoặc hơn. Số đo được trên máy thật quyết định giữ hay bỏ; **nhịp
+    // khung tụt mà thời gian chờ không giảm thì bỏ hẳn đoạn này.**
+    //
+    // `max(by:)` trên danh sách RỖNG trả `nil`, và `if let` bỏ qua — máy ảo hay
+    // một bản iOS sau không khai khuôn nào thì cấu hình giữ nguyên mặc định.
+    // Phòng hờ nằm trong chính phép chọn, không phải một nhánh riêng ai đó quên.
+    let formats = ARWorldTrackingConfiguration.supportedVideoFormats
+    if let best = formats.max(by: { lhs, rhs in
+      let lhsPixels = lhs.imageResolution.width * lhs.imageResolution.height
+      let rhsPixels = rhs.imageResolution.width * rhs.imageResolution.height
+      // Bằng điểm ảnh thì lấy khuôn NHANH hơn: hai khuôn cùng phân giải cho
+      // ARKit cùng lượng thông tin mỗi ảnh, nên thứ còn lại phân biệt chúng là
+      // số ảnh mỗi giây.
+      if lhsPixels == rhsPixels { return lhs.framesPerSecond < rhs.framesPerSecond }
+      return lhsPixels < rhsPixels
+    }) {
+      config.videoFormat = best
+    }
+
     // Có hai cờ nữa trông như "bật cho AR chạy tốt hơn", và cả hai CỐ Ý không
     // được bật — không cái nào chạm tới việc dò mặt phẳng hay việc bắn tia,
     // tức là không cái nào làm tia trúng thêm một lần nào:
@@ -807,7 +862,21 @@ final class ArMeasureSession: NSObject {
   private func runSession(options: ARSession.RunOptions) {
     failure = nil
     failureIsRecoverable = true
-    sceneView.session.run(makeConfiguration(), options: options)
+
+    let config = makeConfiguration()
+    // Đọc khuôn hình TỪ cấu hình sau khi đã gán, không phải từ khuôn vừa chọn:
+    // hai thứ ấy khác nhau đúng ở cái ca đáng quan tâm nhất — danh sách rỗng,
+    // phép gán không xảy ra, và máy đang chạy khuôn mặc định. Báo cáo khuôn
+    // mình MUỐN thay vì khuôn đang CHẠY là bịa ra bằng chứng cho chính phép thử
+    // sinh ra nó.
+    let format = config.videoFormat
+    videoFormat = [
+      "width": Int(format.imageResolution.width),
+      "height": Int(format.imageResolution.height),
+      "fps": format.framesPerSecond,
+    ]
+
+    sceneView.session.run(config, options: options)
     // Mốc tuổi phiên đặt ngay tại đây, cùng lượt với `run`. Xem
     // [sessionStartedAt] vì sao không đặt ở `init`.
     sessionStartedAt = CACurrentMediaTime()
@@ -1080,17 +1149,27 @@ final class ArMeasureSession: NSObject {
   ///
   /// Chạy đúng một lần cho mỗi điểm, ngay sau khi tia trúng — không phải mỗi
   /// khung hình. Không có gì trong đây quay lại đụng vào phép đo.
-  private func makeDiagnostics(for hit: ARRaycastResult) -> ArPointDiagnostics {
-    // Tầng trúng đọc THẲNG từ kết quả. Suy từ thứ tự vòng lặp ở
-    // [raycastFromReticle] là chép lại một sự thật ARKit đã nói ra sẵn, và bản
-    // chép rời khỏi bản gốc ngay lượt đầu ai đó đổi danh sách tầng mục tiêu.
-    let target: ArRaycastTarget?
+  /// Tầng mà một lượt raycast đã trúng, đọc THẲNG từ kết quả.
+  ///
+  /// Suy từ thứ tự vòng lặp ở [raycastFromReticle] là chép lại một sự thật ARKit
+  /// đã nói ra sẵn, và bản chép rời khỏi bản gốc ngay lượt đầu ai đó đổi danh
+  /// sách tầng mục tiêu.
+  ///
+  /// Một hàm dùng chung, không phải hai lượt `switch` chép ra hai chỗ: cùng một
+  /// phép dịch phục vụ chẩn đoán của một điểm ĐÃ chấm và tầng của tia ĐANG
+  /// ngắm. Hai bản chép lệch nhau thì dải chẩn đoán và tâm ngắm nói hai chuyện
+  /// khác nhau về cùng một lượt raycast — và không lỗi nào nổ.
+  private static func raycastTarget(of hit: ARRaycastResult) -> ArRaycastTarget? {
     switch hit.target {
-    case .existingPlaneGeometry: target = .existingPlaneGeometry
-    case .existingPlaneInfinite: target = .existingPlaneInfinite
-    case .estimatedPlane: target = .estimatedPlane
-    @unknown default: target = nil
+    case .existingPlaneGeometry: return .existingPlaneGeometry
+    case .existingPlaneInfinite: return .existingPlaneInfinite
+    case .estimatedPlane: return .estimatedPlane
+    @unknown default: return nil
     }
+  }
+
+  private func makeDiagnostics(for hit: ARRaycastResult) -> ArPointDiagnostics {
+    let target = Self.raycastTarget(of: hit)
 
     let hitColumn = hit.worldTransform.columns.3
     let hitPosition = SIMD3<Float>(hitColumn.x, hitColumn.y, hitColumn.z)
@@ -1193,8 +1272,8 @@ final class ArMeasureSession: NSObject {
   /// Dò xem tia từ tâm ngắm đang trúng gì, và ghi lại vị trí trúng.
   ///
   /// Chỗ DUY NHẤT ghi vào [liveHitPoint]. Hai thứ đọc lượt dò này —
-  /// [refreshAimLock] lấy ra một cờ, [refreshOverlay] lấy ra một vị trí — nhưng
-  /// chỉ có một lượt raycast cho mỗi khung hình, và đó là chủ đích: raycast là
+  /// [refreshAimTarget] lấy ra một tầng, [refreshOverlay] lấy ra một vị trí —
+  /// nhưng chỉ có MỘT lượt raycast mỗi khung hình, và đó là chủ đích: raycast là
   /// việc thật, không phải đọc một biến.
   ///
   /// Vì sao lớp này cần một lượt dò riêng, tách khỏi lúc bấm: máy thật báo về
@@ -1234,7 +1313,7 @@ final class ArMeasureSession: NSObject {
       // Trượt là XOÁ ngay, không có ân hạn: điểm này nói ra một VỊ TRÍ, và giữ
       // lại vị trí của khung trước là vẽ một đoạn thẳng tới chỗ không còn gì —
       // một đoạn đứng yên giữa lúc người dùng vẫn đang rê máy, đọc ra "đã chấm
-      // xong". Ân hạn là chuyện của cái CỜ, ở [refreshAimLock].
+      // xong". Giãn nhịp là chuyện của cái TẦNG, ở [refreshAimTarget].
       liveHitPoint = nil
       return .missed
     }
@@ -1242,32 +1321,53 @@ final class ArMeasureSession: NSObject {
     let column = hit.worldTransform.columns.3
     let point = SIMD3<Float>(column.x, column.y, column.z)
     liveHitPoint = point
-    return .hit(point)
+    return .hit(point, Self.raycastTarget(of: hit))
   }
 
-  /// Cập nhật [aimLocked] theo lượt dò của khung hình này.
+  /// Cập nhật [aimTarget] theo lượt dò của khung hình này.
   ///
-  /// Trả `true` khi cờ ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì mới.
-  private func refreshAimLock(now: TimeInterval, probe: ArReticleProbe) -> Bool {
-    let was = aimLocked
+  /// Trả `true` khi tầng ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì
+  /// mới.
+  ///
+  /// **Không có quãng ân hạn nào.** Tầng ở đây LUÔN là kết quả của một lượt
+  /// raycast thật, cũ nhiều nhất một nhịp lấy mẫu. Bản trước giữ cờ "đã khoá"
+  /// thêm 0,3 s sau lượt trượt đầu tiên và nạp lại quãng ấy ở mỗi lượt trúng,
+  /// nên trên một bề mặt chỉ bám được từng lúc, tâm ngắm nói "khoá" liên tục
+  /// trong khi phần lớn cú bấm trượt — xem chỗ hằng số ấy từng nằm.
+  ///
+  /// Thứ duy nhất còn lại là một lưới LẤY MẪU ở [aimProbeIntervalSeconds]. Nó
+  /// không kéo dài lời hứa nào; nó chỉ chặn tâm ngắm đổi hình nhanh hơn mắt đọc
+  /// được. Lưới ấy cần thiết vì ở nhánh đang có đoạn thẳng sống [probeReticle]
+  /// dò MỖI khung hình, và một hình đổi 60 lần mỗi giây thì không đọc ra trạng
+  /// thái nào — nhấp nháy ở 10 Hz thì đọc được, và nó là THÔNG TIN: chỗ này chỉ
+  /// bám được từng lúc, hãy chĩa sang chỗ khác.
+  private func refreshAimTarget(now: TimeInterval, probe: ArReticleProbe) -> Bool {
+    let was = aimTarget
 
     switch probe {
     case .unavailable:
-      aimLocked = false
-      lastAimHitAt = 0
+      // Không đợi nhịp nào: trạng thái phiên đã nói thẳng rằng cú bấm tới không
+      // đặt nổi điểm nào. Xoá mốc để lượt dò kế tiếp lấy mẫu được ngay.
+      aimTarget = nil
+      lastAimSampleAt = 0
     case .skipped:
       break
-    case .hit:
-      lastAimHitAt = now
-      aimLocked = true
+    case .hit(_, let target):
+      guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
+      lastAimSampleAt = now
+      // Trúng mà ARKit trả một tầng lạ (một giá trị thêm ở bản iOS sau) vẫn là
+      // TRÚNG: cờ `aimLocked` suy từ `!= nil` nên nó phải khác `nil`. Rơi về
+      // `.estimatedPlane` — mức tin cậy THẤP hơn — chứ không phải mức cao: đoán
+      // thấp thì cùng lắm là mời người dùng ngắm kỹ hơn, đoán cao là hứa một
+      // thứ chưa ai kiểm.
+      aimTarget = target ?? .estimatedPlane
     case .missed:
-      // Trượt một lượt chưa đủ để hạ cờ — xem [aimUnlockGraceSeconds].
-      if now - lastAimHitAt >= Self.aimUnlockGraceSeconds {
-        aimLocked = false
-      }
+      guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
+      lastAimSampleAt = now
+      aimTarget = nil
     }
 
-    return was != aimLocked
+    return was != aimTarget
   }
 
   // MARK: - Trạng thái và số đo
@@ -1520,28 +1620,38 @@ final class ArMeasureSession: NSObject {
     // — spec gọi đây là "che con số đang trôi".
     let mm = status == .measured ? currentDistanceMm() : nil
 
-    // Cờ ngắm chỉ có nghĩa ở hai trạng thái còn chấm được, và hai điểm đã đủ
-    // thì nó hết nghĩa hẳn. [refreshAimLock] đã hạ cờ ở mọi trạng thái khác,
+    // Tầng ngắm chỉ có nghĩa ở hai trạng thái còn chấm được, và hai điểm đã đủ
+    // thì nó hết nghĩa hẳn. [refreshAimTarget] đã xoá nó ở mọi trạng thái khác,
     // nhưng nó chỉ chạy khi CÓ khung hình — mà `publish` còn được gọi từ những
     // đường không có khung hình nào (lỗi phiên, `pause`, mất quyền camera).
-    // Chặn thêm một lượt ở đây thì không còn đường nào để một cờ cũ lọt ra
+    // Chặn thêm một lượt ở đây thì không còn đường nào để một tầng cũ lọt ra
     // ngoài kênh.
-    let aimLocked = (status == .ready || status == .firstPointPlaced) && self.aimLocked
+    let aimTarget = (status == .ready || status == .firstPointPlaced) ? self.aimTarget : nil
+    // Cờ SUY RA từ tầng, không phải một biến thứ hai. Hai nguồn cho cùng một
+    // lượt raycast là hai thứ lệch nhau được, và người dùng là người duy nhất
+    // thấy chúng cạnh nhau.
+    let aimLocked = aimTarget != nil
 
-    // `limitedReason` và `aimLocked` nằm trong điều kiện gộp cùng `status`, và
+    // `limitedReason` và `aimTarget` nằm trong điều kiện gộp cùng `status`, và
     // cả hai vì cùng một lý do: bộ nén ở dưới neo vào "số đo đổi quá 0,5 mm",
     // mà cả hai khoá này đổi ĐƯỢC trong khi số đo không đổi một chút nào.
     //
-    // Với `aimLocked` thì còn mạnh hơn thế: lúc nó đổi, phần lớn thời gian
+    // Với `aimTarget` thì còn mạnh hơn thế: lúc nó đổi, phần lớn thời gian
     // **chưa có điểm nào**, nên `mm` là `nil` và nhánh dưới `return` thẳng.
-    // Không đưa nó lên đây thì lượt khoá đầu tiên — đúng cái tín hiệu bảo người
-    // dùng bấm được rồi — bị nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói.
+    // Không đưa nó lên đây thì lượt bắt được bề mặt đầu tiên — đúng cái tín
+    // hiệu bảo người dùng bấm được rồi — bị nuốt trọn, và tâm ngắm câm đúng lúc
+    // nó cần nói.
     //
-    // Cái giá là cờ đổi thì bỏ qua cả nhịp 15 Hz. Chấp nhận được vì trần đã bị
-    // chặn từ chỗ khác: lượt dò chỉ chạy 10 Hz, và quãng ân hạn khi hạ cờ
-    // (0,3 s) kéo trần một chu kỳ khoá-mở xuống dưới 7 lần/giây.
+    // So theo TẦNG chứ không theo cờ: một lượt đổi từ `estimatedPlane` sang
+    // `existingPlaneGeometry` không đổi cờ một chút nào, mà đó là đúng lượt tâm
+    // ngắm phải đổi hình.
+    //
+    // Cái giá là tầng đổi thì bỏ qua cả nhịp 15 Hz. Chấp nhận được vì trần đã
+    // bị chặn từ chỗ khác: cờ chỉ lấy mẫu trên lưới 10 Hz
+    // ([aimProbeIntervalSeconds]), nên nó bắn được nhiều nhất 10 lần/giây và
+    // thực tế còn ít hơn nhiều — chỉ ĐỔI mới bắn.
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
-      aimLocked == lastAimLocked
+      aimTarget == lastAimTarget
     {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
@@ -1587,6 +1697,14 @@ final class ArMeasureSession: NSObject {
     if aimLocked {
       sample["aimLocked"] = true
     }
+    // Tầng đi CÙNG cờ, không thay nó. Cờ là mặt cũ của gói và một app đã dựng
+    // trên nó không phải sửa gì; tầng là mặt mới, và người nhận nào cần ba mức
+    // thì đọc nó. Vắng khoá này nghĩa là "tầng nền không nói" — cùng một chỗ
+    // rơi với "tia không trúng gì", và đúng thế: cả hai đều là không có tầng
+    // nào để bày.
+    if let aimTarget {
+      sample["aimTarget"] = aimTarget.rawValue
+    }
     // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
     // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
     // hai điểm, mà điểm ĐẦU mới là chỗ giả thuyết "chấm sai điểm đầu" phải
@@ -1601,12 +1719,23 @@ final class ArMeasureSession: NSObject {
     // `placePoint` ghi ngay lúc thêm anchor) — giữ CHỖ chứ không rút ngắn danh
     // sách, vì rút ngắn là điểm hai trượt lên chỗ điểm một.
     //
-    // Không cần đưa vào bộ nén ở trên: chẩn đoán chỉ đổi khi [anchors] đổi, và
-    // mọi đường đổi [anchors] đều `publish(force: true)`.
+    // Không cần đưa vào bộ nén ở trên: chẩn đoán chỉ đổi khi [anchors] đổi hoặc
+    // khi phiên `run` lại, và cả hai đường đều `publish(force: true)`.
+    //
+    // Khuôn hình đi CÙNG khối này nhưng KHÔNG đi cùng điều kiện: nó là chuyện
+    // của cả phiên chứ không phải của một điểm, và nó phải đọc được khi chưa có
+    // điểm nào — đó đúng là lúc người ta cần biết vì sao chưa chấm nổi điểm nào.
+    var diagnostics: [String: Any] = [:]
     if !anchors.isEmpty {
-      sample["diagnostics"] = [
-        "points": anchors.map { pointDiagnostics[$0.identifier]?.payload ?? [:] }
-      ]
+      diagnostics["points"] = anchors.map {
+        pointDiagnostics[$0.identifier]?.payload ?? [:]
+      }
+    }
+    if let videoFormat {
+      diagnostics["video"] = videoFormat
+    }
+    if !diagnostics.isEmpty {
+      sample["diagnostics"] = diagnostics
     }
     if let mm {
       sample["mm"] = mm
@@ -1623,7 +1752,7 @@ final class ArMeasureSession: NSObject {
 
     lastStatus = status
     lastLimitedReason = limitedReason
-    lastAimLocked = aimLocked
+    lastAimTarget = aimTarget
     lastMm = mm
     lastEmitAt = now
     lastSample = sample
@@ -1826,7 +1955,7 @@ extension ArMeasureSession: ARSessionDelegate {
     // quãng đang có đoạn thẳng SỐNG, là quãng nó phải chạy mỗi khung hình.
     let now = CACurrentMediaTime()
     let probe = probeReticle(now: now)
-    var shouldPublish = refreshAimLock(now: now, probe: probe)
+    var shouldPublish = refreshAimTarget(now: now, probe: probe)
 
     // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.
     // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit
