@@ -225,6 +225,14 @@ final class ArMeasureSession: NSObject {
   /// lặng lẽ quay về nếp tự dựng node cho từng anchor.
   private let nodeSuppressor = ArMeasureNodeSuppressor()
 
+  /// Hướng dẫn quét bề mặt — bản của Apple, không phải bản tự vẽ.
+  ///
+  /// `ARCoachingOverlayView` biết những thứ một lớp phủ tự vẽ không biết: lúc
+  /// nào phiên đủ dữ liệu để dừng nhắc, hoạt hình nào ứng với thiếu vân so với
+  /// rê quá nhanh, và câu chữ đã dịch sẵn theo ngôn ngữ máy. Gói không dịch gì
+  /// cả — chuỗi hiện ra là chuỗi của hệ điều hành.
+  private let coachingOverlay = ARCoachingOverlayView()
+
   /// Hai chấm và đoạn nối, vẽ ở tầng SceneKit.
   ///
   /// Phải vẽ ở đây chứ không ở Flutter: hai điểm là toạ độ 3D trong hệ toạ độ
@@ -336,6 +344,19 @@ final class ArMeasureSession: NSObject {
 
     sceneView.scene.rootNode.addChildNode(measureNodes.root)
 
+    coachingOverlay.session = sceneView.session
+    // `.anyPlane` chứ không `.horizontalPlane`: cấu hình bật dò cả mặt ngang
+    // lẫn mặt đứng ([makeConfiguration]), và người đo tường thì mặt ngang
+    // không bao giờ tới — hướng dẫn sẽ nhắc mãi một thứ đã không cần nữa.
+    coachingOverlay.goal = .anyPlane
+    // Apple tự bật lúc phiên chưa sẵn sàng và tự tắt khi dò xong. Không có lối
+    // rẽ nào của gói tốt hơn cái đó.
+    coachingOverlay.activatesAutomatically = true
+    coachingOverlay.frame = sceneView.bounds
+    coachingOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    coachingOverlay.isUserInteractionEnabled = false
+    sceneView.addSubview(coachingOverlay)
+
     sceneView.session.delegate = self
     // `ARSession.delegate` là một tham chiếu YẾU, nên dòng trên không dựng vòng.
     sceneView.session.delegateQueue = .main
@@ -367,6 +388,11 @@ final class ArMeasureSession: NSObject {
     relocalizationWatch = nil
     trailingEmit?.cancel()
     trailingEmit = nil
+    // Gỡ hướng dẫn khỏi phiên TRƯỚC khi dừng phiên: để nguyên thì nó còn theo
+    // dõi một phiên đã tắt và tự bật lên trên một bề mặt không còn ai nhìn.
+    coachingOverlay.activatesAutomatically = false
+    coachingOverlay.setActive(false, animated: false)
+    coachingOverlay.session = nil
     sceneView.session.delegate = nil
     sceneView.delegate = nil
     sceneView.session.pause()
@@ -483,6 +509,7 @@ final class ArMeasureSession: NSObject {
     sceneView.session.run(makeConfiguration(), options: options)
     publish(force: true)
   }
+
   // MARK: - Lệnh
 
   /// Chấm một điểm tại con trỏ giữa màn.
