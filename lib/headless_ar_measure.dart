@@ -200,6 +200,11 @@ class ArVideoFormat {
   /// Số khung hình mỗi giây của khuôn ấy — **nhịp danh nghĩa của khuôn**, không
   /// phải nhịp đo được lúc chạy. Máy nóng hay CPU đầy làm nhịp thật tụt xuống
   /// dưới con số này, và không có gì ở đây nói ra chuyện đó.
+  ///
+  /// Cụ thể: tầng Swift đọc `config.videoFormat.framesPerSecond` đúng một lần,
+  /// tại lời gọi `run`, rồi để im. Một phiên tụt xuống 20 khung/s vì nóng máy
+  /// vẫn báo 30. Chỗ hiển thị phải ghi rõ "danh định"; ai cần nhịp THẬT thì
+  /// phải tự đếm khung — gói không đếm.
   final int? fps;
 }
 

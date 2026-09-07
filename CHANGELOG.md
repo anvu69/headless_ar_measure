@@ -1,3 +1,48 @@
+## 0.4.1
+
+Documentation only. **No behaviour change**: the video format selection, the
+crosshair, and every wire field are byte-for-byte what 0.4.0 shipped. This entry
+exists because the first device run produced numbers that are easy to
+misremember in either direction.
+
+**The 0.4.0 video-format experiment: the revert condition was not met, and the
+experiment is still confounded.**
+
+0.4.0 wrote its own condition down before there was any data: *"If a device run
+shows the frame rate dropping without the wait shrinking, revert this."* The run
+happened — iPhone 16 Plus, no LiDAR, table edge on a black mousepad:
+
+* **Before the selection block existed** (this is where 130 s comes from — it is
+  the *reason* the block was written, not a result of it): **130 s** to land the
+  first point, **136 s** for the second.
+* **With the selection block**, session running 3840×2160 at 30fps: **7.8 s** and
+  **17.7 s**.
+
+The frame rate did drop. The wait shrank by roughly a factor of ten. By the
+condition written down in advance, the selection stays.
+
+That is not evidence that more pixels caused the improvement. **Two changes went
+into the same build**: the format selection and the honest crosshair. The old
+crosshair reported "locked" through surfaces where most taps missed, so the
+130 s was largely spent in a tap-miss-tap loop that the crosshair change alone
+would have ended. Nothing in the data separates the two contributions. That is a
+flaw in how the experiment was staged, not a finding about resolution.
+
+A mechanism argues the other way, and it fits the exact scene that failed: the
+highest-resolution formats are **non-binned**, so they give up the pixel binning
+that suppresses noise in dark areas — and the surface ARKit could not see was a
+*black* mousepad. More pixels, each of them noisier, is not obviously more
+feature points there.
+
+So: 4K@30 is **unresolved**, not validated and not refuted. A comparison that
+settles it has to change exactly one thing.
+
+**`ArVideoFormat.fps` is the format's nominal rate, not a delivered one.** It
+comes from `config.videoFormat.framesPerSecond`, read once at `run` and never
+touched again: a session that thermally throttles to 20fps still reports 30. Any
+screen showing it should say "nominal", and any future measurement that wants
+the real rate has to count frames itself — this package does not.
+
 ## 0.4.0
 
 A crosshair that says "locked" while a tap would miss is worse than a crosshair

@@ -301,6 +301,21 @@ world updates — which could eat the gain, or more. That is why
 screen during a device run. **If the frame rate drops and the wait does not,
 this should be reverted.**
 
+It still is a hypothesis after the first device run. The run landed on
+3840×2160 at 30fps and the wait fell from 130 s to 7.8 s, so the revert
+condition above was not met — but the same build also shipped the honest
+crosshair, which plausibly accounts for most of that fall on its own. Nothing
+separates the two. There is also a mechanism pointing the other way: the
+highest-resolution formats are non-binned, giving up the pixel binning that
+suppresses noise in dark areas, and the surface that failed was a *black*
+mousepad. Treat 4K@30 as **unresolved**; a comparison that settles it has to
+change exactly one thing. See the 0.4.1 CHANGELOG entry for the numbers.
+
+`fps` here is the format's **nominal** rate — read from
+`config.videoFormat.framesPerSecond` once at `run`, never updated. A session
+throttled down to 20fps still reports 30. Label it as nominal wherever you show
+it, and count frames yourself if you need the delivered rate.
+
 ## It never throws
 
 A missing plugin registration, a simulator, a ray that hit nothing, a command
