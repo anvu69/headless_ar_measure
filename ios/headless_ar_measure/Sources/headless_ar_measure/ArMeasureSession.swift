@@ -70,9 +70,11 @@ final class ArMeasureSession: NSObject {
 
   /// Số đo đổi ít hơn ngần này thì không bắn.
   ///
-  /// ARKit tinh chỉnh hệ toạ độ liên tục, và mỗi lượt tinh chỉnh là một lượt vẽ
-  /// lại bên Dart. 0,5 mm nằm **dưới sàn nhiễu** của chính phép đo (dung sai
-  /// nhỏ nhất gói này trả ra là ±2 mm trên máy LiDAR, ±5 mm trên máy thường),
+  /// Số đo được tính lại ở MỖI khung hình (xem [session(_:didUpdate frame:)]),
+  /// nên không có ngưỡng này thì mỗi khung là một lượt vẽ lại bên Dart — kể cả
+  /// khi con số chỉ rung ở chữ số không ai đọc. 0,5 mm nằm **dưới sàn nhiễu**
+  /// của chính phép đo (dung sai nhỏ nhất gói này trả ra là ±2 mm trên máy
+  /// LiDAR, ±5 mm trên máy thường),
   /// nên ngưỡng này không giấu được cái gì người dùng nhìn thấy — nó chỉ cắt
   /// phần rung mà mắt không đọc nổi.
   private static let minChangeMm = 0.5
@@ -257,14 +259,17 @@ final class ArMeasureSession: NSObject {
     guard status == .ready || status == .firstPointPlaced else { return false }
     guard let transform = raycastFromReticle() else { return false }
 
-    // ARAnchor chứ không phải `simd_float3` thuần. ARKit chỉnh lại hệ toạ độ
-    // thế giới mỗi lần nó hiểu thêm về căn phòng (gộp mặt phẳng, đóng vòng,
-    // nối lại vị trí sau gián đoạn). Một `simd_float3` lưu lại là một con số
-    // đông cứng trong hệ toạ độ CŨ: sau một lượt chỉnh, hai điểm trôi khỏi chỗ
-    // thật mà khoảng cách giữa chúng vẫn trông rất bình thường — sai mà không
-    // có dấu hiệu. Transform của `ARAnchor` thì được ARKit cập nhật theo, nên
-    // đọc lại nó mỗi lượt cho ra đúng "số đo TRÔI" mà spec muốn: cái trôi ấy
-    // CHÍNH LÀ lượt tinh chỉnh, hiện ra cho người dùng thấy nó đứng dần lại.
+    // `ARAnchor` chứ không phải `simd_float3` thuần — nhưng KHÔNG phải vì
+    // anchor tự đi theo lượt tinh chỉnh. Nó không hứa thế: `transform` là
+    // readonly, tài liệu của `ARAnchor` khuyên "nếu vật ảo di chuyển thì bỏ
+    // anchor cũ và thêm anchor mới", và mọi chỗ Apple tài liệu hoá việc anchor
+    // tự cập nhật đều gọi tên một LỚP CON (`ARPlaneAnchor`, `ARGeoAnchor`).
+    //
+    // Anchor ở đây làm đúng một việc: nói cho ARKit biết mình quan tâm chỗ
+    // này, để nó giữ chỗ ấy qua các lượt chỉnh hệ toạ độ. Còn việc ĐỌC LẠI thì
+    // đi đường khác — [session(_:didUpdate frame:)] lấy transform từ chính
+    // khung hình, nên nếu ARKit có trao một đối tượng anchor khác thì mình
+    // thấy, và nếu nó không trao gì thì cũng không có gì đứng im chờ mãi.
     let anchor = ARAnchor(name: "headless_ar_measure.point", transform: transform)
     anchors.append(anchor)
     sceneView.session.add(anchor: anchor)
@@ -546,6 +551,33 @@ final class ArMeasureSession: NSObject {
     start(options: [.resetTracking, .removeExistingAnchors])
   }
 
+  /// Nhận bản mới của hai điểm từ một danh sách anchor bất kỳ.
+  ///
+  /// `ARAnchor.transform` là **readonly**, nên nếu ARKit có chỉnh vị trí một
+  /// điểm thì nó chỉ có thể trao ra một ĐỐI TƯỢNG KHÁC cùng `identifier`. Đây
+  /// là chỗ đối tượng ấy được nhận về, dù nó tới từ `frame.anchors` hay từ
+  /// `session(_:didUpdate anchors:)`.
+  ///
+  /// Trả về `true` khi có ít nhất một điểm được thay — người gọi dùng nó để
+  /// khỏi bắn khi không có gì đổi.
+  @discardableResult
+  private func adoptUpdatedAnchors(_ updated: [ARAnchor]) -> Bool {
+    guard !anchors.isEmpty else { return false }
+    // Lọc theo id trước, tính sau: với `sceneReconstruction = .mesh`, danh sách
+    // truyền vào có thể là hàng trăm `ARMeshAnchor` mỗi lượt.
+    let ids = Set(anchors.map(\.identifier))
+    var changed = false
+    for candidate in updated where ids.contains(candidate.identifier) {
+      guard let index = anchors.firstIndex(where: { $0.identifier == candidate.identifier })
+      else { continue }
+      if anchors[index] !== candidate {
+        anchors[index] = candidate
+        changed = true
+      }
+    }
+    return changed
+  }
+
   private func clearAnchors() {
     for anchor in anchors {
       sceneView.session.remove(anchor: anchor)
@@ -625,18 +657,42 @@ extension ArMeasureSession: ARSessionDelegate {
     publish(force: true)
   }
 
+  /// Nguồn kích hoạt CHÍNH của số đo trôi.
+  ///
+  /// Không phải `didUpdate anchors:`, và đây là chỗ dễ đặt nhầm nhất trong cả
+  /// tệp. Tài liệu `ARAnchor` của Apple khuyên "nếu một vật ảo di chuyển thì bỏ
+  /// anchor ở chỗ cũ và thêm một cái ở chỗ mới", `transform` là readonly, và
+  /// mọi chỗ Apple thật sự tài liệu hoá việc anchor tự cập nhật đều gọi tên một
+  /// LỚP CON (`ARPlaneAnchor`, `ARGeoAnchor`) chứ không phải một `ARAnchor`
+  /// trần do app thêm. Bản thân `session(_:didUpdate anchors:)` cũng chỉ hứa
+  /// ARKit "**may** automatically update".
+  ///
+  /// Treo cả phép đo lên một lời hứa có chữ "may" thì hỏng theo kiểu tệ nhất:
+  /// callback kia không nổ → con số ĐỨNG IM từ lúc điểm thứ hai rơi xuống →
+  /// toàn bộ bộ giãn nhịp bên dưới thành mã chết, và sau một lượt ARKit chỉnh
+  /// lại thế giới thì hai transform đã lưu là số đông cứng trong hệ toạ độ CŨ.
+  /// Khung hình thì luôn tới, nên nó là nguồn kích hoạt duy nhất đáng tin.
+  ///
+  /// Đây KHÔNG phải một cái vòi 60 Hz: [publish] gọi không ép buộc, nên ngưỡng
+  /// 0,5 mm và nhịp 15 Hz (kèm phát bù) vẫn nén y như trước.
+  func session(_ session: ARSession, didUpdate frame: ARFrame) {
+    // Dưới hai điểm thì không có gì trong mẫu đổi được theo khung hình: trạng
+    // thái chỉ phụ thuộc `trackingState`, `failure`, hai cờ pause/interrupt và
+    // SỐ điểm — không thứ nào đi qua đây. Chặn sớm để khung hình không kéo theo
+    // một lượt tính vô ích nào lúc người dùng còn chưa chấm xong.
+    guard anchors.count == 2 else { return }
+    // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit
+    // giao khung mới. Chỉ hai `ARAnchor` được lấy ra, và chúng không giữ khung.
+    guard adoptUpdatedAnchors(frame.anchors) else { return }
+    publish()
+  }
+
   func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-    // Chỉ quan tâm hai điểm của mình. Với `sceneReconstruction = .mesh`, mảng
-    // này chở hàng trăm `ARMeshAnchor` mỗi lượt — lọc trước, tính sau.
-    let ids = Set(self.anchors.map(\.identifier))
-    var changed = false
-    for updated in anchors where ids.contains(updated.identifier) {
-      if let index = self.anchors.firstIndex(where: { $0.identifier == updated.identifier }) {
-        self.anchors[index] = updated
-        changed = true
-      }
-    }
-    if changed { publish() }
+    // Đường phụ, cố ý giữ lại: nếu ARKit CÓ tự cập nhật hai điểm thì mình nghe
+    // được ngay lượt ấy thay vì đợi khung hình kế tiếp. Nhưng không có gì trong
+    // phép đo phụ thuộc vào chuyện nó có nổ hay không — xem
+    // [session(_:didUpdate frame:)].
+    if adoptUpdatedAnchors(anchors) { publish() }
   }
 
   func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {

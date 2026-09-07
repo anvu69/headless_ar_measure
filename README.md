@@ -70,15 +70,24 @@ it the session runs until the engine happens to release the view.
 
 ### The number drifts, and that is the point
 
-Once both points are down, every refinement ARKit makes to its coordinate
-system produces a new sample with a slightly different number. You watch it
-settle, and that settling is the signal that the reading is worth keeping.
-Freezing it is your job — this package keeps reporting.
+Once both points are down, the distance is recomputed **from every ARKit
+frame**, and a new sample goes out whenever it has moved by more than 0.5mm —
+paced to at most 15Hz, with a trailing emit so the last refinement is never the
+one that gets dropped. You watch the number settle, and that settling is the
+signal that the reading is worth keeping. Freezing it is your job; this package
+keeps reporting.
 
-Points are stored as `ARAnchor`s, not as raw coordinates, precisely so they
-follow those refinements. A raw `simd_float3` would be frozen in the old frame
-of reference: after a correction the two points drift off the real spots while
-the distance between them still looks perfectly reasonable.
+The two points are `ARAnchor`s, which is how you tell ARKit that you care about
+those spots. But nothing here relies on ARKit updating them: `ARAnchor.transform`
+is read-only, Apple's own guidance for a moving object is to remove the anchor
+and add a new one, and the classes Apple documents as self-updating are
+subclasses (`ARPlaneAnchor`, `ARGeoAnchor`) rather than a plain app-added
+anchor. `session(_:didUpdate anchors:)` only promises that ARKit *may* update.
+
+So the transforms are read back out of `ARFrame.anchors`, matched by
+`identifier`, on every frame. If ARKit revises a point, that revision shows up.
+If it never does, the number is simply constant — which is the truth, rather
+than a stale reading dressed up as a live one.
 
 ### Tolerance
 

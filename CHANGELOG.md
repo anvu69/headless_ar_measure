@@ -35,8 +35,14 @@ First release.
   scene reconstruction where the device supports it, and a layered raycast
   (`.existingPlaneGeometry`, then `.estimatedPlane`). One code path — LiDAR
   changes what the second layer hits, not which branch runs.
-* Points are `ARAnchor`s, so they follow ARKit's corrections to the world
-  coordinate system instead of drifting silently away from them.
+* The distance is recomputed from every `ARFrame`, reading both point
+  transforms back out of `ARFrame.anchors` by `identifier` rather than trusting
+  a stored copy. Samples are still paced — 0.5mm threshold, 15Hz, trailing
+  emit — so this is not a 60Hz firehose. The two points are `ARAnchor`s, which
+  is how ARKit is told those spots matter, but `ARAnchor.transform` is
+  read-only and `session(_:didUpdate anchors:)` only promises ARKit *may*
+  update a plain app-added anchor; the frame is the trigger that always
+  arrives.
 * Relocalization is attempted after an interruption. If it has not succeeded
   within five seconds, both points are dropped and the session returns to
   `ready` rather than measuring across two different coordinate systems.
