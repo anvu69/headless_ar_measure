@@ -1,3 +1,36 @@
+## Unreleased
+
+First run on real hardware (iPhone 16 Plus), and four things it turned up.
+
+* **The camera prompt is now this package's job.** Authorization that is still
+  `notDetermined` used to share a branch with `authorized`, and `ARSession.run()`
+  was called straight away. That makes the camera pipeline depend on a grant
+  that lands *after* `run`, with nothing in Apple's contract promising ARKit
+  rebuilds it and no callback reporting that it did not. The AR surface is
+  transparent until SceneKit draws its first frame, so the failure showed up as
+  the host app's own background colour and no error anywhere. Authorization is
+  now requested first and the session starts on the answer.
+* **The AR surface takes no touches.** `isUserInteractionEnabled = false`, so
+  UIKit's hit test never stops on it and every touch falls through to the
+  Flutter widgets above. (The gesture-recognizer blocking policy was not the
+  problem: `Eager` blocks the *platform view's* recognizers as soon as Flutter
+  claims a touch, and `ARSCNView` registers none of its own.)
+* **The two points and the segment between them are drawn**, in SceneKit, where
+  the 3D coordinates actually live. Constant lighting model (the session runs
+  with no lights, so a lit material would render pure black), depth buffer off
+  (so LiDAR mesh and detected planes cannot clip the marks away), and a NaN
+  guard on the segment's rotation (measuring top-to-bottom yields exactly −Y,
+  where the rotation axis is undefined and SceneKit silently drops a NaN
+  transform).
+* **Surface-scanning guidance** via `ARCoachingOverlayView` with
+  `goal = .anyPlane` — Apple's own view, Apple's own words, the device's own
+  language. It activates while the session is not ready and deactivates when
+  ARKit has found a plane.
+* The platform view factory now holds the plugin strongly. Measured on a
+  simulator that it was never nil, but `create` is the only place a new view is
+  wired into the plugin's registry, and a nil there would silence the whole
+  sample stream with no error.
+
 ## 0.1.0
 
 First release.

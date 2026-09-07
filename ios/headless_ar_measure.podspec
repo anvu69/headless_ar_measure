@@ -7,8 +7,8 @@ Pod::Spec.new do |s|
   s.version = '0.1.0'
   s.summary = 'Headless iOS AR measurement: status and distance as a stream.'
   s.description      = <<-DESC
-Wraps a raw ARKit camera surface into a typed Dart stream of status and
-distance samples. No overlays, no exceptions, no network calls.
+Wraps an ARKit camera surface into a typed Dart stream of status and
+distance samples. No text of its own, no exceptions, no network calls.
                        DESC
   s.homepage = 'https://github.com/anvu69/headless_ar_measure'
   s.license = { :file => '../LICENSE' }

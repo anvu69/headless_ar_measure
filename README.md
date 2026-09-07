@@ -1,11 +1,23 @@
 # headless_ar_measure
 
-A headless AR distance measurement surface for iOS. No overlays — just a
-typed stream of status and distance samples over a raw ARKit camera view.
+A headless AR distance measurement surface for iOS: a typed stream of status
+and distance samples over an ARKit camera view.
 
 Every number, every label, every unit conversion is left to you. This
 package hands back millimetres and a tolerance; how you display them is not
 its business.
+
+Headless does not mean it draws nothing. It draws exactly the two things
+Flutter cannot draw for you, and nothing else:
+
+- **The two points and the segment between them.** They are 3D coordinates in
+  ARKit's world, so only the native layer knows where they land on screen after
+  the phone turns. Flutter only ever receives a millimetre value.
+- **Surface-scanning guidance** — Apple's `ARCoachingOverlayView`, in the
+  system's own words and the device's own language. It turns itself on while
+  the session is not ready and off once ARKit has found a plane.
+
+No text of ours, no numbers, no buttons, no product vocabulary.
 
 ## Install
 
@@ -19,6 +31,21 @@ package wraps ARKit, and everything in it is Apple's semantics.
 
 Your app's `Info.plist` needs an `NSCameraUsageDescription`. Without it the
 app is killed the moment the session starts.
+
+### The camera prompt is ours to raise
+
+Your app does not need a permission plugin. When authorization is still
+`notDetermined`, this package asks for it with `AVCaptureDevice.requestAccess`
+**before** starting the session, and starts the session only once the answer is
+in. A refusal arrives as `ArMeasureStatus.cameraUnauthorized`.
+
+That ordering is load-bearing, not tidiness. Calling `ARSession.run()` while the
+permission is undecided makes the camera pipeline depend on a grant that happens
+*after* `run` — nothing in Apple's contract says ARKit rebuilds that pipeline
+when the user taps Allow, and no session callback reports that it did not.
+`didFailWithError` stays silent and the tracking state stays silent. The AR
+surface is **transparent** until SceneKit draws its first frame, so what the
+user sees is their own app's background, with nothing anywhere saying why.
 
 ## Use
 
@@ -53,7 +80,7 @@ controller?.dispose();
 | `ArMeasure.isAvailable()` | `ARWorldTrackingConfiguration.isSupported`, asked **at runtime** |
 | `ArMeasure.samples` | Status and distance, one broadcast stream |
 | `ArMeasure.parseSample()` | Builds an `ArMeasureSample` from raw channel data |
-| `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface |
+| `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface. Takes no touches — put your buttons on top of it |
 | `ArMeasureController.placePoint()` | Places a point under the screen centre; `false` if the ray hit nothing |
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
@@ -88,6 +115,17 @@ So the transforms are read back out of `ARFrame.anchors`, matched by
 `identifier`, on every frame. If ARKit revises a point, that revision shows up.
 If it never does, the number is simply constant — which is the truth, rather
 than a stale reading dressed up as a live one.
+
+### The surface takes no touches
+
+`ARSCNView` is created with `isUserInteractionEnabled = false`, so UIKit's hit
+test never stops there and every touch falls straight through to Flutter. Put
+your buttons in a `Stack` on top of the view and treat it as a picture.
+
+One consequence worth knowing: the Reset button Apple's coaching overlay shows
+during relocalization is not tappable either. Nothing is stranded by that — the
+session gives up on relocalization after five seconds by itself, and
+`ArMeasureController.reset()` does the same job from your own UI.
 
 ### Tolerance
 

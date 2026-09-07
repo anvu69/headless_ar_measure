@@ -301,8 +301,20 @@ class ArMeasureController {
 
 /// Widget bọc mặt camera AR của nền tảng.
 ///
-/// Một [UiKitView] mỏng quanh `ARSCNView` phía Swift. Gói không vẽ chữ,
-/// không vẽ lớp phủ — mọi con số, mọi nhãn là việc của app.
+/// Một [UiKitView] mỏng quanh `ARSCNView` phía Swift. Gói không vẽ chữ và
+/// không vẽ số — mọi con số, mọi nhãn, mọi nút là việc của app.
+///
+/// Hai thứ gói CÓ vẽ, và cả hai đều vì app không vẽ nổi:
+///
+/// * **Hai chấm và đoạn thẳng nối chúng.** Chúng là toạ độ 3D trong hệ toạ độ
+///   của ARKit; chỉ tầng Swift biết chúng chiếu xuống màn ở đâu sau mỗi lượt
+///   máy xoay. App chỉ nhận được một con số milimét.
+/// * **Hướng dẫn quét bề mặt** — `ARCoachingOverlayView`, bản của Apple, chữ
+///   của hệ điều hành. Nó tự bật lúc phiên chưa sẵn sàng và tự tắt khi ARKit dò
+///   xong.
+///
+/// Bề mặt này KHÔNG nhận cú chạm nào: mọi thao tác là widget Flutter đặt đè lên
+/// trên, và chạm rơi thẳng xuống đó.
 class ArMeasureView extends StatelessWidget {
   const ArMeasureView({super.key, this.onPlatformViewCreated});
 
