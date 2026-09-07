@@ -97,6 +97,13 @@ final class ArMeasureSession: NSObject {
   /// lặng lẽ quay về nếp tự dựng node cho từng anchor.
   private let nodeSuppressor = ArMeasureNodeSuppressor()
 
+  /// Đang chờ người dùng trả lời hộp thoại quyền camera.
+  ///
+  /// Chặn hỏi hai lần: `reset()` bấm liên tiếp trong lúc hộp thoại đang mở sẽ
+  /// gọi lại [start], và `requestAccess` lần thứ hai không hiện thêm hộp thoại
+  /// nào mà chỉ trả lời muộn — hai lời gọi `run` chồng nhau.
+  private var isRequestingCameraAccess = false
+
   // MARK: - Ngưỡng bắn
 
   /// Số đo đổi ít hơn ngần này thì không bắn.
@@ -237,6 +244,7 @@ final class ArMeasureSession: NSObject {
   }
 
   private func start(options: ARSession.RunOptions = []) {
+    guard !isStopped else { return }
     guard ARWorldTrackingConfiguration.isSupported else {
       // Gói không có trạng thái "máy không chạy được ARKit" — app phải hỏi
       // `isAvailable()` TRƯỚC khi dựng view. Tới được đây nghĩa là app bỏ qua
@@ -249,6 +257,9 @@ final class ArMeasureSession: NSObject {
     }
 
     switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .authorized:
+      break
+
     case .denied, .restricted:
       // Không gọi `run` khi biết chắc sẽ bị từ chối: `run` trong tình trạng này
       // cho ra một màn đen câm, còn ARKit thì báo lỗi muộn hơn nhiều.
@@ -260,18 +271,69 @@ final class ArMeasureSession: NSObject {
       failureIsRecoverable = true
       publish(force: true)
       return
-    case .notDetermined, .authorized:
-      break
+
+    case .notDetermined:
+      // LẦN CHẠY ĐẦU TIÊN trên một máy thật đi qua đúng nhánh này, và bản trước
+      // gộp nó chung với `.authorized` rồi gọi thẳng `run`.
+      //
+      // Gọi thẳng `run` lúc chưa xác định quyền có hiện hộp thoại — ARKit tự
+      // xin — nhưng nó bắt việc dựng đường ống camera phụ thuộc vào một lượt
+      // cấp quyền xảy ra SAU khi `run` đã chạy. Không có hợp đồng nào của Apple
+      // nói ARKit sẽ dựng lại đường ống ấy khi người dùng bấm Cho phép, và
+      // không có callback nào của phiên báo là nó đã không dựng: `didFailWith`
+      // im, trạng thái bám im. Bề mặt AR thì TRONG SUỐT khi SceneKit chưa vẽ
+      // khung nào (đo được: đặt `scene.background.contents` một màu đặc mà
+      // không có phiên thì màu ấy KHÔNG hiện) — nên thứ người dùng thấy là nền
+      // của chính app họ, và ở app này nền ấy màu đen.
+      //
+      // Xin quyền TRƯỚC, chạy phiên SAU: sau lời gọi này quyền chỉ còn hai
+      // đường, và cả hai đều có đường ra rõ ràng.
+      requestCameraAccess(then: options)
+      return
+
     @unknown default:
       break
     }
 
+    runSession(options: options)
+  }
+
+  /// Hỏi quyền camera rồi mới chạy phiên.
+  ///
+  /// Trả lời tới trên một hàng đợi bất kỳ của AVFoundation, nên phải nhảy về
+  /// luồng chính: mọi thứ khác trong lớp này chạy ở đó, và không có khoá nào.
+  private func requestCameraAccess(then options: ARSession.RunOptions) {
+    guard !isRequestingCameraAccess else { return }
+    isRequestingCameraAccess = true
+    // Trong lúc hộp thoại mở, trạng thái vẫn là `initializing`: chưa từ chối,
+    // chưa hỏng, chỉ là chưa chạy. Bắn ra để màn có một khung hình để vẽ thay
+    // vì đứng ở "chưa có mẫu nào".
+    publish(force: true)
+
+    AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+      // `[weak self]` chứ không phải một tham chiếu mạnh: hộp thoại có thể đứng
+      // đó lâu hơn màn AR, và giữ mạnh ở đây là giữ cả `ARSCNView` sống qua
+      // lượt người dùng thoát ra.
+      DispatchQueue.main.async {
+        guard let self, !self.isStopped else { return }
+        self.isRequestingCameraAccess = false
+        guard granted else {
+          self.failure = .cameraUnauthorized
+          self.failureIsRecoverable = true
+          self.publish(force: true)
+          return
+        }
+        self.runSession(options: options)
+      }
+    }
+  }
+
+  private func runSession(options: ARSession.RunOptions) {
     failure = nil
     failureIsRecoverable = true
     sceneView.session.run(makeConfiguration(), options: options)
     publish(force: true)
   }
-
   // MARK: - Lệnh
 
   /// Chấm một điểm tại con trỏ giữa màn.
