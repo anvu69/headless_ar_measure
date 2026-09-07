@@ -103,9 +103,10 @@ class ArMeasure {
   ///
   /// `status` lạ hoặc thiếu thì trả `null` — dữ liệu từ tầng nền không phải
   /// thứ mình kiểm soát, và ném ở đây thì cả luồng chết theo một khung hỏng.
-  /// Thiếu `mm`/`tolMm` thì [ArMeasureSample.measurement] về `null` chứ
-  /// không làm hỏng cả mẫu: nhiều trạng thái (vd. [ArMeasureStatus.ready])
-  /// đúng ra là không mang số đo.
+  /// Thiếu, hoặc sai kiểu, `mm`/`tolMm`/`snappedToEdge` thì
+  /// [ArMeasureSample.measurement] về `null` (hoặc `snappedToEdge` về
+  /// `false`) chứ không làm hỏng cả mẫu, và tuyệt đối không ném: nhiều trạng
+  /// thái (vd. [ArMeasureStatus.ready]) đúng ra là không mang số đo.
   static ArMeasureSample? parseSample(Map<Object?, Object?> raw) {
     final status = switch (raw['status']) {
       'initializing' => ArMeasureStatus.initializing,
@@ -120,15 +121,19 @@ class ArMeasure {
     };
     if (status == null) return null;
 
-    final mm = (raw['mm'] as num?)?.toDouble();
-    final tolMm = (raw['tolMm'] as num?)?.toDouble();
+    // Kiểm kiểu trước khi ép: `as num?`/`as bool?` ném _TypeError khi tầng
+    // nền gửi sai kiểu (vd. 'mm': 'not-a-number'), và dữ liệu từ tầng nền
+    // không phải thứ mình kiểm soát. Sai kiểu bị coi như thiếu trường — cùng
+    // một lối rẽ với "thiếu mm/tolMm" ở trên, không phải một nhánh lỗi riêng.
+    final rawMm = raw['mm'];
+    final mm = rawMm is num ? rawMm.toDouble() : null;
+    final rawTolMm = raw['tolMm'];
+    final tolMm = rawTolMm is num ? rawTolMm.toDouble() : null;
+    final rawSnapped = raw['snappedToEdge'];
+    final snappedToEdge = rawSnapped is bool ? rawSnapped : false;
     final measurement = (mm == null || tolMm == null)
         ? null
-        : ArMeasurement(
-            mm: mm,
-            tolMm: tolMm,
-            snappedToEdge: raw['snappedToEdge'] as bool? ?? false,
-          );
+        : ArMeasurement(mm: mm, tolMm: tolMm, snappedToEdge: snappedToEdge);
 
     return ArMeasureSample(status: status, measurement: measurement);
   }
