@@ -504,10 +504,15 @@ final class ArMeasureSession: NSObject {
 
       let waited = now - lastEmitAt
       if waited < Self.minIntervalSeconds {
-        // Trễ nhịp thì HẸN LẠI, không bỏ. Bỏ thẳng thì lượt tinh chỉnh cuối
-        // cùng — đúng lượt con số đứng lại, tức tín hiệu để người dùng bấm chốt
-        // — có thể không bao giờ tới Dart, vì ARKit chỉ báo khi nó thật sự
-        // chỉnh chứ không báo đều đặn.
+        // Trễ nhịp thì HẸN LẠI, không bỏ. Bỏ thẳng thì lượt đổi cuối cùng —
+        // đúng lượt con số đứng lại, tức tín hiệu để người dùng bấm chốt — có
+        // thể không bao giờ tới Dart.
+        //
+        // Khung hình tới đều 60 Hz nên phần lớn thời gian cái hẹn này bị chính
+        // khung sau huỷ và đặt lại ở đúng cùng một mốc (`lastEmitAt + nhịp`),
+        // rồi tới mốc ấy thì bắn thẳng. Nó là lưới an toàn cho lúc khung hình
+        // NGỪNG tới giữa chừng — phiên bị `pause`, hoặc gián đoạn — chứ không
+        // còn là đường chính như hồi bắn theo sự kiện.
         let work = DispatchWorkItem { [weak self] in self?.publish(force: true) }
         trailingEmit = work
         DispatchQueue.main.asyncAfter(
