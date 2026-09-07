@@ -74,6 +74,134 @@ final class ArMeasureNodeSuppressor: NSObject, ARSCNViewDelegate {
   }
 }
 
+/// Hai chấm và đoạn thẳng nối chúng — thứ DUY NHẤT gói này vẽ.
+///
+/// Vẽ ở tầng SceneKit chứ không đẩy lên Flutter, và đó không phải chuyện tiện
+/// tay: hai điểm là toạ độ 3D trong hệ toạ độ của ARKit. Muốn vẽ chúng ở Flutter
+/// thì phải chiếu tay xuống toạ độ màn, mỗi khung hình một lần, qua một ma trận
+/// camera đi thêm một vòng kênh nền tảng — và bất cứ độ trễ nào của vòng ấy hiện
+/// ra thành hai chấm trượt khỏi vật thật mỗi lần máy xoay. Ở đây thì SceneKit
+/// chiếu chúng trong cùng lượt vẽ với nền camera, nên chúng dính vào vật.
+///
+/// Node của lớp này gắn thẳng vào `rootNode`, KHÔNG đi qua
+/// `renderer(_:nodeFor:)` — nên [ArMeasureNodeSuppressor] vẫn trả `nil` cho mọi
+/// anchor và hai chuyện không đụng nhau.
+final class ArMeasureNodes {
+  /// Kích thước cố định trong KHÔNG GIAN THẬT, không phải trên màn.
+  ///
+  /// App Measure của Apple giữ chấm to bằng nhau trên màn bằng cách chia tỉ lệ
+  /// theo khoảng cách tới máy ở mỗi khung hình. Ở đây cố ý không làm thế: nó
+  /// bắt lớp này chạy mỗi khung hình kể cả lúc không có gì đổi, mà cả tệp này
+  /// dựng quanh chuyện KHÔNG chạy mỗi khung hình. Cái giá là chấm trông nhỏ dần
+  /// khi lùi xa — chấp nhận được trong tầm đo 0,3–3 m.
+  private static let dotRadius: CGFloat = 0.007
+  private static let lineRadius: CGFloat = 0.002
+
+  let root = SCNNode()
+
+  private let dots: [SCNNode]
+  private let line: SCNNode
+
+  init() {
+    dots = [Self.makeDot(), Self.makeDot()]
+    line = Self.makeLine()
+    for dot in dots {
+      root.addChildNode(dot)
+    }
+    root.addChildNode(line)
+    update(points: [])
+  }
+
+  /// Đặt lại hình theo các điểm đang có: không điểm nào, một, hoặc hai.
+  ///
+  /// Không dựng lại node nào — chỉ dời chỗ và ẩn/hiện. Dựng lại `SCNGeometry`
+  /// mỗi lượt là cấp phát trên luồng vẽ, và lượt gọi này đi cùng nhịp với số đo
+  /// trôi.
+  func update(points: [SIMD3<Float>]) {
+    for (index, dot) in dots.enumerated() {
+      if index < points.count {
+        dot.simdPosition = points[index]
+        dot.isHidden = false
+      } else {
+        dot.isHidden = true
+      }
+    }
+
+    guard points.count == 2 else {
+      line.isHidden = true
+      return
+    }
+
+    let a = points[0]
+    let b = points[1]
+    let delta = b - a
+    let length = simd_length(delta)
+    // Hai điểm trùng nhau thì không có hướng nào để xoay hình trụ, và hình trụ
+    // dài 0 cũng không vẽ ra gì. Ẩn đi, đừng dựng một quaternion NaN.
+    guard length > 1e-5 else {
+      line.isHidden = true
+      return
+    }
+
+    (line.geometry as? SCNCylinder)?.height = CGFloat(length)
+    line.simdPosition = (a + b) / 2
+    line.simdOrientation = Self.rotation(toward: delta / length)
+    line.isHidden = false
+  }
+
+  /// Phép xoay từ trục Y (trục dựng của `SCNCylinder`) sang một hướng đã chuẩn hoá.
+  ///
+  /// Chỗ đáng ngờ là hai đầu NGƯỢC CHIỀU nhau — hướng −Y, tức đo chiều cao từ
+  /// trên xuống. Đó là một cách đo bình thường, không phải góc hiếm, và ở đó
+  /// trục xoay về mặt toán học là không xác định: một công thức dựng trục bằng
+  /// tích có hướng sẽ ra vectơ 0 rồi chuẩn hoá thành NaN, và một node có
+  /// transform NaN thì SceneKit bỏ vẽ — im lặng, không lỗi nào nổ.
+  ///
+  /// Đã ĐO trên macOS 26 (`swift` một tệp, so vectơ Y sau khi xoay với hướng
+  /// mong muốn): `simd_quatf(from:to:)` của Apple trả về đúng cho cả −Y, sai số
+  /// 0. Nên dùng thẳng nó — nhưng vẫn có lưới: tài liệu của Apple KHÔNG hứa gì
+  /// cho trường hợp ngược chiều, và một bản iOS sau đổi ý thì lưới này giữ hình
+  /// vẽ được thay vì để nó biến mất.
+  private static func rotation(toward direction: SIMD3<Float>) -> simd_quatf {
+    let rotation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: direction)
+    let vector = rotation.vector
+    if vector.x.isNaN || vector.y.isNaN || vector.z.isNaN || vector.w.isNaN {
+      // Bất cứ trục nào vuông góc với Y cũng đưa +Y về −Y sau nửa vòng.
+      return simd_quatf(angle: .pi, axis: SIMD3<Float>(1, 0, 0))
+    }
+    return rotation
+  }
+
+  private static func makeDot() -> SCNNode {
+    let sphere = SCNSphere(radius: dotRadius)
+    sphere.segmentCount = 16
+    sphere.firstMaterial = makeMaterial()
+    return SCNNode(geometry: sphere)
+  }
+
+  private static func makeLine() -> SCNNode {
+    let cylinder = SCNCylinder(radius: lineRadius, height: 0.01)
+    cylinder.radialSegmentCount = 12
+    cylinder.firstMaterial = makeMaterial()
+    return SCNNode(geometry: cylinder)
+  }
+
+  private static func makeMaterial() -> SCNMaterial {
+    let material = SCNMaterial()
+    // `.constant` chứ không phải mặc định `.blinn`, và đây là một cái bẫy có
+    // thật: phiên đặt `automaticallyUpdatesLighting = false`, nên cảnh KHÔNG có
+    // đèn nào. Một vật liệu cần đèn ra màu đen tuyền trên nền camera — vẽ rồi
+    // mà trông y hệt chưa vẽ, không lỗi nào nổ.
+    material.lightingModel = .constant
+    material.diffuse.contents = UIColor.white
+    // Không đọc và không ghi bộ đệm sâu: hình đo phải luôn thấy được, không bị
+    // lưới LiDAR hay mặt phẳng ARKit dò ra che mất — đúng như app Measure.
+    material.readsFromDepthBuffer = false
+    material.writesToDepthBuffer = false
+    return material
+  }
+}
+
 /// Một phiên đo AR: sở hữu trọn một `ARSCNView`, một `ARSession`, và hai điểm.
 ///
 /// Mỗi platform view dựng đúng một phiên và giữ nó mạnh. Không có phiên dùng
@@ -96,6 +224,13 @@ final class ArMeasureSession: NSObject {
   /// `SCNView`), nên không ai giữ thì nó chết ngay sau `init` và `ARSCNView`
   /// lặng lẽ quay về nếp tự dựng node cho từng anchor.
   private let nodeSuppressor = ArMeasureNodeSuppressor()
+
+  /// Hai chấm và đoạn nối, vẽ ở tầng SceneKit.
+  ///
+  /// Phải vẽ ở đây chứ không ở Flutter: hai điểm là toạ độ 3D trong hệ toạ độ
+  /// của ARKit, và chỉ tầng này biết chúng chiếu xuống màn ở đâu sau mỗi lượt
+  /// máy xoay. Flutter chỉ nhận được một con số milimét.
+  private let measureNodes = ArMeasureNodes()
 
   /// Đang chờ người dùng trả lời hộp thoại quyền camera.
   ///
@@ -180,8 +315,9 @@ final class ArMeasureSession: NSObject {
     super.init()
 
     sceneView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    // Gói KHÔNG vẽ chữ và không vẽ hình: mọi lớp phủ là việc của Flutter. Ở đây
-    // `ARSCNView` chỉ còn làm đúng một việc — dựng nền camera.
+    // Gói KHÔNG vẽ chữ: mọi con số, mọi nhãn là việc của Flutter. Thứ DUY NHẤT
+    // nó vẽ là hai chấm và đoạn nối ([measureNodes]) — vì chỉ tầng này biết
+    // chúng nằm đâu trong không gian.
     sceneView.debugOptions = []
     sceneView.automaticallyUpdatesLighting = false
     // Và không dựng node nào cho anchor — xem [ArMeasureNodeSuppressor].
@@ -197,6 +333,8 @@ final class ArMeasureSession: NSObject {
     // [relocalizationDeadlineSeconds] và app có lệnh `reset` riêng, nên không
     // có đường nào cụt.
     sceneView.isUserInteractionEnabled = false
+
+    sceneView.scene.rootNode.addChildNode(measureNodes.root)
 
     sceneView.session.delegate = self
     // `ARSession.delegate` là một tham chiếu YẾU, nên dòng trên không dựng vòng.
@@ -528,6 +666,17 @@ final class ArMeasureSession: NSObject {
     }
   }
 
+  /// Vị trí các điểm đã chấm trong hệ toạ độ thế giới, theo thứ tự chấm.
+  ///
+  /// Đọc từ chính `anchors` — cùng nguồn với [currentDistanceMm], nên hình vẽ
+  /// và con số không bao giờ nói hai chuyện khác nhau.
+  private func currentPoints() -> [SIMD3<Float>] {
+    anchors.map {
+      let column = $0.transform.columns.3
+      return SIMD3<Float>(column.x, column.y, column.z)
+    }
+  }
+
   /// Khoảng cách giữa hai điểm, tính bằng milimét. `nil` khi chưa đủ hai điểm.
   private func currentDistanceMm() -> Double? {
     guard anchors.count == 2 else { return nil }
@@ -561,6 +710,21 @@ final class ArMeasureSession: NSObject {
     trailingEmit = nil
 
     let status = currentStatus()
+
+    // Vẽ TRƯỚC mọi nhánh nén ở dưới. Hình phải bám hai điểm ngay cả ở những
+    // lượt con số không đáng gửi đi (đổi dưới 0,5 mm, hoặc chưa tới nhịp 15 Hz)
+    // — để nó rơi vào nhánh nén thì đoạn thẳng giật theo nhịp KÊNH thay vì theo
+    // khung hình, và mắt đọc ra ngay.
+    //
+    // Ẩn ở đúng ba trạng thái mà hệ toạ độ không còn đáng tin, cùng lý lẽ với
+    // việc che con số: hai chấm vẫn nằm nguyên chỗ cũ trong một hệ toạ độ đã
+    // trôi thì chúng chỉ vào sai vật, mà trông vẫn như đang chỉ đúng.
+    // `needsMotion` KHÔNG nằm trong danh sách: nó chớp lên vì nửa giây rung tay,
+    // và cho hình biến mất từng nhịp như thế còn khó đọc hơn.
+    let coordinatesAreTrustworthy =
+      status != .interrupted && status != .trackingLost && status != .cameraUnauthorized
+    measureNodes.update(points: coordinatesAreTrustworthy ? currentPoints() : [])
+
     let limitedReason = currentLimitedReason()
     // Số đo chỉ đi kèm khi hệ toạ độ còn đáng tin. Mất bám hay đang gián đoạn
     // thì hai điểm vẫn còn đó, nhưng khoảng cách giữa chúng đã không còn nghĩa
