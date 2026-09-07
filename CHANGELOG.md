@@ -1,3 +1,43 @@
+## 0.2.0
+
+Until now the segment only appeared once *both* points were down. Everything
+before that was a crosshair and a hope: you aimed, tapped, aimed somewhere else,
+and only then found out what you had measured. Apple's Measure app has drawn a
+live segment since 2018, and the reason is not decoration — the segment is how
+you see that you are about to measure the wrong edge, while you can still move.
+
+* **A live segment.** With one point placed, every ARKit frame draws a segment
+  from it to whatever the centre ray is currently hitting. A ray that hits
+  nothing draws **nothing**: a segment left standing where the last hit was
+  reads as a finished measurement, and it is the reading a still image cannot
+  distinguish from a real one.
+* **`ArMeasure.overlay`** — a new `Stream<ArMeasureOverlay>` carrying both
+  endpoints already projected to screen coordinates, in **points** (Flutter's
+  unit, origin top-left), plus `bIsLive` and the running `distanceMm`. It exists
+  because Dart cannot do the projection: it is `SCNSceneRenderer.projectPoint`,
+  and it has to run in the same pass that draws the frame or the label lags a
+  frame behind the segment it is labelling.
+* An endpoint that is **behind the camera** comes back `null`, not a
+  coordinate. The projection runs through the origin, so a point behind you
+  lands at a perfectly plausible spot in front of you and neither x nor y says
+  so; only z does. An endpoint merely off the edge of the screen keeps its
+  coordinate, negative or not — the segment reaching it still crosses the frame.
+* `distanceMm` is computed in 3D and shares its formula with
+  `ArMeasurement.mm`, so the running number and the settled number cannot
+  disagree; it survives an endpoint that will not project.
+* A **second event channel**, not a wider `samples`. The overlay runs at up to
+  30Hz and `samples` stays capped at 15Hz: merging them would make every status
+  listener filter thirty frames a second looking for a change that arrives every
+  few seconds. Identical consecutive frames are not re-sent, so silence on this
+  stream means nothing moved.
+* The crosshair probe and the live endpoint now read **one** raycast per frame
+  instead of two — and the probe runs every frame (not at 10Hz) for exactly as
+  long as a live segment is on screen.
+
+Not verified on a device yet: whether the projected coordinates land on the
+segment on a @2x/@3x screen, and whether the live segment tracks the crosshair
+without visible lag.
+
 ## 0.1.0
 
 A tile edge measured 382mm against a true 400 (−4.5%); two tiles measured 795

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:headless_ar_measure/headless_ar_measure.dart';
 
 /// Ghim những luật của tầng Swift mà **không lỗi nào nổ** khi bị phá.
 ///
@@ -18,6 +19,10 @@ void main() {
   final viewSource = File(
     'ios/headless_ar_measure/Sources/headless_ar_measure/ArMeasurePlatformView.swift',
   ).readAsStringSync();
+  final pluginSource = File(
+    'ios/headless_ar_measure/Sources/headless_ar_measure/HeadlessArMeasurePlugin.swift',
+  ).readAsStringSync();
+  final dartSource = File('lib/headless_ar_measure.dart').readAsStringSync();
 
   group('quyền camera', () {
     test('xin quyền TRƯỚC khi chạy phiên, không để ARKit tự xin', () {
@@ -153,14 +158,38 @@ void main() {
 
   group('tâm ngắm tự nói', () {
     test('lượt dò dùng ĐÚNG tia mà placePoint dùng', () {
+      // Lượt dò đã dời từ `refreshAimLock` sang `probeReticle` khi đoạn thẳng
+      // sống vào: nay có HAI thứ đọc cùng một lượt dò — một cờ và một vị trí —
+      // nên lượt raycast phải nằm ở một chỗ cả hai cùng gọi. Luật thì không đổi
+      // một chữ, chỉ đổi chỗ canh.
       expect(
-        _swiftMethodBody(sessionSource, 'private func refreshAimLock('),
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
         contains('raycastFromReticle()'),
         reason:
             'Cờ ngắm là một lời hứa về cú bấm SẮP TỚI. Dò bằng một tia khác — '
             'khác tầng mục tiêu, khác alignment, khác điểm bắn — là hứa một '
             'đằng làm một nẻo: tâm ngắm khoá lại, người dùng bấm, và không có '
             'gì xảy ra. Đúng cái hỏng máy thật báo về.',
+      );
+    });
+
+    // Cùng lời hứa, một bậc mạnh hơn: đoạn thẳng sống và cờ ngắm phải đọc CHUNG
+    // một lượt dò. Hai lượt raycast riêng trong cùng một khung hình không chỉ
+    // tốn gấp đôi — chúng bắn ở hai khoảnh khắc khác nhau, nên có những khung mà
+    // tâm ngắm nói "chưa bám" trong khi đoạn thẳng đang nối tới một điểm.
+    test('cờ ngắm và đoạn sống đọc CHUNG một lượt dò mỗi khung hình', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'func session(_ session: ARSession, didUpdate frame: ARFrame)',
+      );
+
+      expect(body, contains('let probe = probeReticle(now: now)'));
+      expect(body, contains('refreshAimLock(now: now, probe: probe)'));
+      expect(
+        'raycastFromReticle()'.allMatches(body).length,
+        0,
+        reason:
+            'Khung hình không được tự bắn thêm một tia nào ngoài lượt dò chung.',
       );
     });
 
@@ -213,6 +242,204 @@ void main() {
             'sang true KHÔNG đổi số đo nào — chưa có điểm nào để đo — nên nếu '
             'nó không nằm trong điều kiện gộp này thì lượt khoá đầu tiên bị '
             'nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói nhất.',
+      );
+    });
+  });
+
+  /// Đoạn thẳng SỐNG và kênh lớp phủ.
+  ///
+  /// Cả nhóm này canh những chỗ mà hỏng thì lớp phủ **vẫn vẽ ra một hình** —
+  /// chỉ là sai chỗ, sai đơn vị, hoặc sai thời điểm. Không cái nào ném, không
+  /// cái nào lộ ra ở `flutter test` nếu không có ca ở đây, và mỗi cái đều đọc
+  /// được như một giới hạn của ARKit chứ không như một lỗi của mình.
+  group('đoạn thẳng sống và lớp phủ', () {
+    test('sáu khoá của khung lớp phủ khớp từng chữ giữa Swift và Dart', () {
+      for (final key in ['ax', 'ay', 'bx', 'by', 'bIsLive', 'distanceMm']) {
+        expect(
+          sessionSource,
+          contains('frame["$key"]'),
+          reason:
+              'Khoá `$key` không còn được tầng Swift ghi vào khung lớp phủ. '
+              'Dart đọc bằng chuỗi, nên lệch một chữ là trường ấy về `null` — '
+              'nhãn mất số, hoặc đoạn thẳng mất một đầu, và không lỗi nào nổ.',
+        );
+        expect(
+          dartSource,
+          contains("raw['$key']"),
+          reason:
+              'Khoá `$key` không còn được Dart đọc. Cùng cái hỏng câm, ngược '
+              'chiều: Swift vẫn gửi, và không ai nhận.',
+        );
+      }
+    });
+
+    test('lớp phủ đi kênh RIÊNG, và tên kênh khớp hai bên', () {
+      expect(
+        pluginSource,
+        contains('"${ArMeasure.eventChannelName}"'),
+        reason: 'Kênh trạng thái phải còn nguyên chỗ cũ.',
+      );
+      expect(
+        pluginSource,
+        contains('"${ArMeasure.overlayChannelName}"'),
+        reason:
+            'Tên kênh lớp phủ bên Swift và bên Dart đã lệch — `overlay` không '
+            'nhận được khung nào, và một kênh im lặng trông y hệt một phiên '
+            'chưa chấm điểm nào.',
+      );
+      expect(
+        ArMeasure.overlayChannelName,
+        isNot(ArMeasure.eventChannelName),
+        reason:
+            'Gộp hai kênh là bắt mọi người nghe TRẠNG THÁI lọc ba mươi khung '
+            'mỗi giây để tìm một thay đổi mỗi vài giây.',
+      );
+    });
+
+    // Hai ca dưới đây đọc thân hàm ĐÃ BÓC CHÚ THÍCH, và đó không phải chuyện
+    // gọn gàng: cả hai chữ được canh — `contentScaleFactor` và `projected.z` —
+    // đều xuất hiện trong chú thích giải thích chính chúng. Không bóc thì xoá
+    // sạch phép chia mà ca kiểm vẫn xanh, vì lời giải thích còn nằm đó.
+    test('phép chiếu đổi PIXEL sang POINT bằng contentScaleFactor', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func projectToScreen('),
+        ),
+        contains('/ scale'),
+        reason:
+            '`SCNSceneRenderer.projectPoint` trả toạ độ theo PIXEL của lớp vẽ, '
+            'Flutter thì làm việc bằng point. Bỏ phép chia là trên máy @3x mọi '
+            'toạ độ lớn gấp ba: nhãn bay ra ngoài màn trong khi đoạn thẳng '
+            'SceneKit vẫn nằm đúng chỗ — hai thứ cùng một dữ liệu, lệch nhau '
+            'đúng một hệ số nguyên, và không có gì nói ra vì sao.',
+      );
+    });
+
+    test('phép chiếu kiểm z, không trả toạ độ của điểm sau lưng camera', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func projectToScreen('),
+        ),
+        contains('projected.z'),
+        reason:
+            'Điểm sau lưng camera vẫn chiếu ra một toạ độ x, y trông hoàn toàn '
+            'hợp lệ — phép chiếu đi qua gốc, nên nó rơi xuống một chỗ đối xứng '
+            'phía trước. Hai con số ấy không nói ra điều đó; chỉ z nói. Không '
+            'kiểm z là vẽ một đoạn thẳng chạy tới một điểm ở phía sau gáy.',
+      );
+    });
+
+    test('lớp phủ có trần nhịp RIÊNG 30 Hz, không mượn nhịp của samples', () {
+      expect(
+        sessionSource,
+        contains('overlayMinIntervalSeconds = 1.0 / 30.0'),
+        reason:
+            'Bắn mỗi khung hình của ARKit là 60 Hz qua một kênh nền tảng cho '
+            'một lớp vẽ mà mắt không đọc nổi quá 30 lần/giây.',
+      );
+      expect(
+        sessionSource,
+        contains('minIntervalSeconds = 1.0 / 15.0'),
+        reason:
+            'Nhịp của `samples` phải đứng nguyên 15 Hz. Kéo nó lên theo lớp '
+            'phủ là đúng cái lý do kênh này được tách ra.',
+      );
+    });
+
+    test('tia trượt thì XOÁ điểm sống, không giữ lại điểm của khung trước', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'private func probeReticle(',
+      );
+      // Cắt từ lượt raycast trở đi: `liveHitPoint = nil` cũng nằm ở nhánh
+      // "trạng thái không cho chấm" phía trên, nên tìm trong cả thân hàm thì
+      // xoá sạch nhánh TRƯỢT mà ca kiểm vẫn xanh.
+      final afterRaycast = body.substring(body.indexOf('raycastFromReticle()'));
+
+      expect(
+        afterRaycast,
+        contains('liveHitPoint = nil'),
+        reason:
+            'Giữ điểm cũ là để một đoạn thẳng ĐỨNG YÊN trên màn giữa lúc người '
+            'dùng vẫn đang rê máy — và một đoạn đứng yên đọc ra "đã chấm xong". '
+            'Ở đây khác cờ tâm ngắm: cờ có quãng ân hạn 0,3 s để khỏi nhấp nháy, '
+            'còn đoạn thẳng thì không, vì nó nói ra một VỊ TRÍ chứ không phải '
+            'một trạng thái.',
+      );
+    });
+
+    test('đang có đoạn sống thì dò MỖI khung hình, không theo nhịp 10 Hz', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'private func probeReticle(',
+      );
+
+      expect(
+        body,
+        contains('anchors.count == 1'),
+        reason:
+            'Nhịp 10 Hz chọn cho một giá trị BOOLEAN. Đầu kia của đoạn thẳng '
+            'sống là chính kết quả tia này, và ở 10 Hz nó giật sáu khung một '
+            'bước — thấy rõ trên máy, không ca kiểm nào bắt được.',
+      );
+      expect(
+        body.indexOf('anchors.count == 1'),
+        lessThan(body.indexOf('aimProbeIntervalSeconds')),
+        reason:
+            'Lối rẽ "đang có đoạn sống" phải đứng TRƯỚC lượt giãn nhịp. Đặt sau '
+            'thì nó nằm trong nhánh đã bị 10 Hz cắt, và không đổi được gì.',
+      );
+    });
+
+    test('đoạn sống cũng vẽ ở SceneKit, không chỉ bắn lên Dart', () {
+      expect(
+        sessionSource,
+        contains('func update(points: [SIMD3<Float>], live: SIMD3<Float>?)'),
+        reason:
+            'Flutter chỉ vẽ NHÃN. Đoạn thẳng vẫn phải do SceneKit vẽ, vì chỉ nó '
+            'chiếu được trong cùng lượt vẽ với nền camera — vẽ đoạn ở Flutter '
+            'là để nó trôi lệch khỏi vật mỗi lần máy xoay.',
+      );
+    });
+
+    test('lớp phủ và hình vẽ 3D dùng CHUNG một cổng tin cậy', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'private func refreshOverlay(',
+      );
+
+      expect(
+        body,
+        contains('coordinatesAreTrustworthy()'),
+        reason:
+            'Mất bám hay đang gián đoạn thì hai điểm vẫn còn đó, nhưng chúng '
+            'chỉ vào sai vật. Đó là lý do hình 3D bị ẩn ở ba trạng thái ấy.',
+      );
+      expect(
+        body,
+        contains('measureNodes.update('),
+        reason:
+            'Hai cổng rời nhau là lúc hình 3D biến mất mà nhãn Flutter vẫn nằm '
+            'lơ lửng giữa màn với một con số — hoặc ngược lại. Cùng một hàm thì '
+            'không có chỗ cho hai cổng lệch nhau.',
+      );
+    });
+
+    test('số đang chạy và số đã chốt dùng CHUNG một công thức', () {
+      expect(
+        _swiftMethodBody(
+          sessionSource,
+          'private func currentDistanceMm() -> Double?',
+        ),
+        contains('distanceMm(from:'),
+        reason:
+            'Chép công thức ra chỗ thứ hai là mở đường cho nhãn nổi và số đã '
+            'chốt nói hai con số khác nhau về cùng một đoạn thẳng, trên cùng '
+            'một màn.',
+      );
+      expect(
+        _swiftMethodBody(sessionSource, 'private func refreshOverlay('),
+        contains('distanceMm(from:'),
       );
     });
   });
@@ -425,4 +652,14 @@ String _swiftMethodBody(String source, String signature) {
   );
 
   return source.substring(start, end);
+}
+
+/// Bỏ mọi chú thích `//` khỏi một đoạn mã Swift.
+///
+/// Cần thiết ở đúng những chỗ mà chữ được canh cũng là chữ dùng để GIẢI THÍCH
+/// nó — `contentScaleFactor`, `projected.z`. Không bóc thì một ca kiểm có thể
+/// xanh nhờ chính lời chú thích nói vì sao dòng mã ấy phải có mặt, sau khi dòng
+/// mã ấy đã bị xoá.
+String _withoutComments(String swift) {
+  return swift.replaceAll(RegExp(r'//.*'), '');
 }

@@ -10,9 +10,10 @@ its business.
 Headless does not mean it draws nothing. It draws exactly the two things
 Flutter cannot draw for you, and nothing else:
 
-- **The two points and the segment between them.** They are 3D coordinates in
-  ARKit's world, so only the native layer knows where they land on screen after
-  the phone turns. Flutter only ever receives a millimetre value.
+- **The two points and the segment between them** — including the *live*
+  segment that follows the crosshair once the first point is down. They are 3D
+  coordinates in ARKit's world, so only the native layer knows where they land
+  on screen after the phone turns.
 - **Surface-scanning guidance** — Apple's `ARCoachingOverlayView`, in the
   system's own words and the device's own language. It turns itself on while
   the session is not ready and off once ARKit has found a plane.
@@ -23,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.1.0
+  headless_ar_measure: ^0.2.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -83,7 +84,9 @@ controller?.dispose();
 |---|---|
 | `ArMeasure.isAvailable()` | `ARWorldTrackingConfiguration.isSupported`, asked **at runtime** |
 | `ArMeasure.samples` | Status and distance, one broadcast stream |
+| `ArMeasure.overlay` | The segment's two endpoints in **screen points**, plus the running distance. A second stream, up to 30Hz |
 | `ArMeasure.parseSample()` | Builds an `ArMeasureSample` from raw channel data |
+| `ArMeasure.parseOverlay()` | Builds an `ArMeasureOverlay` from raw channel data |
 | `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface. Takes no touches — put your buttons on top of it |
 | `ArMeasureController.placePoint()` | Places a point under the screen centre; returns an `ArMeasurePlaceResult` saying why not, when not |
 | `ArMeasureController.undoPoint()` | Drops the last point |
@@ -122,6 +125,48 @@ happened:
 `notReady` is also what you get when the channel cannot answer at all — a
 missing plugin, a disposed view. Never `missed`: inviting someone to keep
 moving the phone will not revive a dead channel.
+
+### The segment is live before the second tap
+
+Once the first point is down, the package draws a segment from it to whatever
+the centre ray is currently hitting, refreshed every ARKit frame — the way
+Apple's Measure app behaves. When the ray hits nothing, the segment is **not
+drawn at all**; a segment left standing where the last hit was reads as a
+finished measurement.
+
+`ArMeasure.overlay` is the same thing in Flutter's coordinates, for the label
+you want to hang off it:
+
+```dart
+final overlayFrame = ValueNotifier<ArMeasureOverlay?>(null);
+ArMeasure.overlay.listen((frame) => overlayFrame.value = frame);
+```
+
+| Field | What it is |
+|---|---|
+| `pointA` | the first point in screen **points**, origin top-left, same space as a `CustomPaint` stacked over `ArMeasureView` |
+| `pointB` | the other end: the second placed point, or the live crosshair hit |
+| `bIsLive` | `pointB` is the moving crosshair, not a placed point |
+| `distanceMm` | distance between the two ends, live ones included |
+
+Feed it into a `ValueNotifier` and repaint from that. This is a 30Hz stream;
+calling `setState` on it rebuilds your whole subtree thirty times a second.
+
+Three things about it that are easy to get wrong when reading the numbers:
+
+- `pointA` and `pointB` are `null` when there is **nowhere on screen** to draw
+  — no point placed, a ray that hit nothing, or a point that has gone behind the
+  camera. A point merely off the edge of the screen is *not* null: its
+  coordinate is negative or past the screen width, and the segment reaching it
+  still crosses the frame.
+- `distanceMm` is measured in 3D, so it survives an endpoint that cannot be
+  projected. It is also the same computation as `ArMeasurement.mm`, so the
+  running number and the settled number never disagree by formula.
+- It is a **separate channel** from `samples` on purpose. Status and diagnostics
+  change every few seconds; folding a 30Hz stream into them would make every
+  status listener filter thirty frames a second to find one change. The package
+  also never re-sends a frame identical to the previous one, so silence means
+  nothing moved — not that something broke.
 
 ### Every sample carries how the measurement happened
 

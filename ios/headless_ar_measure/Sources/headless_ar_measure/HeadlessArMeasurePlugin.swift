@@ -18,9 +18,16 @@ import UIKit
 public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
   private static let methodChannelName = "headless_ar_measure/method"
   private static let eventChannelName = "headless_ar_measure/stream"
+  private static let overlayChannelName = "headless_ar_measure/overlay"
   private static let viewTypeId = "headless_ar_measure/view"
 
   private var sink: FlutterEventSink?
+
+  /// Đầu ra của kênh lớp phủ. Xem [ArMeasureOverlayChannel].
+  ///
+  /// Giữ MẠNH: plugin cần gọi vào nó ở mỗi khung lớp phủ, và chiều ngược lại
+  /// giữ yếu nên không có vòng nào.
+  private let overlayChannel = ArMeasureOverlayChannel()
 
   /// Sổ đăng ký platform view, GIỮ YẾU.
   ///
@@ -52,7 +59,31 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       name: eventChannelName, binaryMessenger: registrar.messenger())
     events.setStreamHandler(instance)
 
+    // Kênh THỨ HAI, chỉ chở lớp phủ. Nhịp của nó (30 Hz) gấp đôi nhịp trần của
+    // kênh trên, và phần lớn khung của nó không mang một thay đổi trạng thái
+    // nào — gộp chung là bắt mọi người nghe trạng thái lọc ba mươi khung mỗi
+    // giây để tìm một thay đổi mỗi vài giây.
+    //
+    // Cần một đối tượng riêng vì `FlutterStreamHandler` chỉ có MỘT bộ
+    // `onListen`/`onCancel`, và `instance` đã dùng nó cho kênh trên.
+    instance.overlayChannel.plugin = instance
+    let overlayEvents = FlutterEventChannel(
+      name: overlayChannelName, binaryMessenger: registrar.messenger())
+    overlayEvents.setStreamHandler(instance.overlayChannel)
+
     registrar.register(ArMeasureViewFactory(plugin: instance), withId: viewTypeId)
+  }
+
+  /// Phát lại khung lớp phủ gần nhất của mọi phiên đang sống.
+  ///
+  /// Gọi từ [ArMeasureOverlayChannel] lúc có người nghe mới. Kênh lớp phủ KHÔNG
+  /// bắn lại một khung y hệt khung trước, nên không có dòng này thì một người
+  /// nghe tới muộn trong lúc máy nằm yên có thể đợi vô thời hạn.
+  func replayLastOverlay() {
+    prune()
+    for entry in views.values {
+      entry.value?.session.replayLastOverlay()
+    }
   }
 
   /// Ghi một view vừa dựng vào sổ. Gọi từ [ArMeasureViewFactory].
@@ -175,5 +206,47 @@ extension HeadlessArMeasurePlugin: ArMeasureSessionOutput {
     // luồng nền tảng, và mọi thứ gọi tới đây đã ở trên luồng chính
     // (`ArMeasureSession` đặt `delegateQueue = .main` chính vì việc này).
     sink?(sample)
+  }
+
+  func arMeasureSession(_ session: ArMeasureSession, didProduceOverlay frame: [String: Any]) {
+    overlayChannel.send(frame)
+  }
+}
+
+// MARK: - Kênh sự kiện thứ hai
+
+/// Đầu ra của kênh lớp phủ.
+///
+/// Một lớp riêng chỉ vì một ràng buộc của khuôn: `FlutterStreamHandler` có đúng
+/// MỘT bộ `onListen`/`onCancel`, và [HeadlessArMeasurePlugin] đã dùng bộ ấy cho
+/// kênh trạng thái. Không có logic nào ở đây ngoài việc giữ một `sink`.
+final class ArMeasureOverlayChannel: NSObject, FlutterStreamHandler {
+  /// Giữ YẾU, dù plugin sống suốt đời engine: kênh này bị chính plugin giữ
+  /// mạnh, nên một tham chiếu mạnh ngược lại là một vòng — và luật vòng đời số
+  /// 2 của gói không có ngoại lệ cho "đằng nào cũng sống mãi".
+  weak var plugin: HeadlessArMeasurePlugin?
+
+  private var sink: FlutterEventSink?
+
+  func onListen(withArguments _: Any?, eventSink events: @escaping FlutterEventSink)
+    -> FlutterError?
+  {
+    sink = events
+    // Kênh này KHÔNG bắn lại một khung y hệt khung trước, nên người nghe tới
+    // muộn trong lúc máy nằm yên có thể đợi vô thời hạn. Xem
+    // `ArMeasureSession.replayLastOverlay`.
+    plugin?.replayLastOverlay()
+    return nil
+  }
+
+  func onCancel(withArguments _: Any?) -> FlutterError? {
+    sink = nil
+    return nil
+  }
+
+  /// Đẩy một khung lên Dart. Không có người nghe thì bỏ khung — lớp phủ là thứ
+  /// vẽ được ngay ở khung sau, không có gì để dồn lại.
+  func send(_ frame: [String: Any]) {
+    sink?(frame)
   }
 }

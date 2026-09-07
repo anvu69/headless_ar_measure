@@ -273,6 +273,75 @@ class ArMeasureSample {
   final ArMeasureDiagnostics? diagnostics;
 }
 
+/// Hai đầu đoạn thẳng đang đo, đã chiếu xuống **toạ độ màn**.
+///
+/// Gói tự vẽ đoạn thẳng ở tầng SceneKit — xem [ArMeasureView]. Lớp này tồn tại
+/// cho thứ gói KHÔNG vẽ và không được phép vẽ: một nhãn chữ neo vào đoạn ấy.
+/// Chữ là việc của app, còn phép chiếu 3D → 2D thì Dart không làm nổi, nên gói
+/// trả về đúng phần Dart thiếu.
+///
+/// Đơn vị là **point** (đơn vị của Flutter), gốc ở góc **trên-trái** của bề mặt
+/// AR — cùng hệ toạ độ với một `CustomPaint` đặt đè lên [ArMeasureView], nên
+/// người vẽ dùng thẳng, không đổi đơn vị lần nữa.
+///
+/// Đi trên một kênh RIÊNG ([ArMeasure.overlay]), không đi chung với
+/// [ArMeasure.samples]: lớp phủ chạy tới 30 Hz, còn trạng thái và chẩn đoán đổi
+/// vài giây một lần. Gộp chung là bắt mọi người nghe trạng thái lọc ba mươi
+/// khung mỗi giây.
+class ArMeasureOverlay {
+  const ArMeasureOverlay({
+    this.pointA,
+    this.pointB,
+    this.bIsLive = false,
+    this.distanceMm,
+  });
+
+  /// Điểm thứ nhất trên màn. `null` khi chưa chấm điểm nào, và cũng `null` khi
+  /// điểm ĐÃ chấm nằm ngoài khối nhìn — sau lưng camera, hoặc quá xa.
+  ///
+  /// Hai chuyện ấy cố ý không tách nhau: cả hai đều là "không có chỗ nào trên
+  /// màn để vẽ", và đó là toàn bộ điều người vẽ cần biết.
+  ///
+  /// `null` KHÔNG có nghĩa "ngoài mép màn". Một điểm ngoài mép màn vẫn có toạ
+  /// độ, và toạ độ ấy **âm hoặc lớn hơn bề màn** — giữ nguyên, vì đoạn thẳng
+  /// nối tới nó vẫn cắt qua khung hình và vẫn phải vẽ.
+  final Offset? pointA;
+
+  /// Đầu kia của đoạn thẳng trên màn.
+  ///
+  /// Là điểm thứ hai ĐÃ chấm khi [bIsLive] là `false`, và là giao điểm của tia
+  /// tâm ngắm ở khung hình này khi [bIsLive] là `true`.
+  ///
+  /// `null` theo đúng hai lối của [pointA], cộng một lối thứ ba khi [bIsLive]:
+  /// tia tâm ngắm **không trúng gì**. Lúc ấy đừng vẽ đoạn nào — giữ lại đoạn
+  /// của khung trước là để một đoạn thẳng đứng yên trên màn, và một đoạn đứng
+  /// yên đọc ra "đã chấm xong".
+  final Offset? pointB;
+
+  /// [pointB] là tâm ngắm đang chạy, chưa chấm.
+  ///
+  /// Nói về TRẠNG THÁI của phép đo — "mới có một điểm, đầu kia còn chạy theo
+  /// máy" — nên nó vẫn `true` ở những khung mà tia trượt và [pointB] là `null`.
+  ///
+  /// Mặc định `false`: thiếu khoá thì coi như hai điểm đã chốt, và đó là phía
+  /// an toàn — một nhãn đứng yên đọc nhầm thành số đã chốt còn đỡ hơn một số đã
+  /// chốt bị đọc nhầm thành đang chạy.
+  final bool bIsLive;
+
+  /// Khoảng cách giữa hai đầu, milimét — **kể cả khi đầu B còn sống**.
+  ///
+  /// Đo trong không gian 3D, không đo trên màn: nó là cùng một phép tính với
+  /// [ArMeasurement.mm], nên con số chạy và con số chốt không bao giờ lệch nhau
+  /// vì hai công thức.
+  ///
+  /// Vì đo trong 3D nên nó vẫn có giá trị khi [pointA] hoặc [pointB] là `null`
+  /// — hai điểm vẫn có thật, chỉ là không chiếu được xuống màn.
+  ///
+  /// Không kèm dung sai. Dung sai đi với số đã chốt ([ArMeasurement.tolMm]);
+  /// một con số đang trôi theo tay người thì ± của nó chưa nói được gì.
+  final double? distanceMm;
+}
+
 /// Cửa vào duy nhất tới phiên đo AR.
 ///
 /// Trung tính hoàn toàn: không có gì trong lớp này biết cung là gì, hay có
@@ -286,13 +355,18 @@ class ArMeasure {
   static const String methodChannelName = 'headless_ar_measure/method';
   static const String eventChannelName = 'headless_ar_measure/stream';
 
+  /// Kênh sự kiện THỨ HAI, chỉ chở [ArMeasureOverlay]. Xem [overlay].
+  static const String overlayChannelName = 'headless_ar_measure/overlay';
+
   /// `viewType` truyền cho [UiKitView] khi dựng [ArMeasureView].
   static const String viewType = 'headless_ar_measure/view';
 
   static const MethodChannel _method = MethodChannel(methodChannelName);
   static const EventChannel _events = EventChannel(eventChannelName);
+  static const EventChannel _overlayEvents = EventChannel(overlayChannelName);
 
   static Stream<ArMeasureSample>? _samples;
+  static Stream<ArMeasureOverlay>? _overlay;
 
   /// Luồng trạng thái và số đo của phiên đang chạy.
   ///
@@ -320,6 +394,33 @@ class ArMeasure {
         )
         .where((ArMeasureSample? s) => s != null)
         .cast<ArMeasureSample>();
+  }
+
+  /// Luồng lớp phủ: hai đầu đoạn thẳng ở toạ độ màn, kèm số đo đang chạy.
+  ///
+  /// Nhịp **khung hình, chặn trên 30 Hz**. Nó là luồng nuôi một lớp vẽ, nên
+  /// người nghe phải ghi vào `ValueNotifier` chứ đừng gọi `setState`.
+  ///
+  /// **Một kênh riêng, không phải một trường mới của [samples].** Trạng thái và
+  /// chẩn đoán đổi vài giây một lần; đẩy chúng lên 30 Hz là bắt mọi người nghe
+  /// trạng thái lọc ba mươi khung mỗi giây để tìm một thay đổi.
+  ///
+  /// **Không bao giờ ném, không bao giờ đứt** — cùng lối với [samples]: một
+  /// khung không phải `Map` bị bỏ, một lỗi trên kênh bị bỏ.
+  ///
+  /// Tầng nền **không bắn lại một khung y hệt khung trước**, nên đừng đọc luồng
+  /// này như một nhịp tim: im lặng nghĩa là không có gì đổi, không phải hỏng.
+  static Stream<ArMeasureOverlay> get overlay {
+    return _overlay ??= _overlayEvents
+        .receiveBroadcastStream()
+        .handleError((Object _) {})
+        .map(
+          (Object? event) => event is Map
+              ? parseOverlay(Map<Object?, Object?>.from(event))
+              : null,
+        )
+        .where((ArMeasureOverlay? o) => o != null)
+        .cast<ArMeasureOverlay>();
   }
 
   /// Máy này chạy được ARKit tới đâu. Hỏi LÚC CHẠY, không suy từ đời máy.
@@ -465,6 +566,57 @@ class ArMeasure {
       planeWidthMm: rawWidth is num ? rawWidth.toDouble() : null,
       planeHeightMm: rawHeight is num ? rawHeight.toDouble() : null,
     );
+  }
+
+  /// Dựng một khung lớp phủ từ dữ liệu kênh. Công khai để test được mà không
+  /// cần kênh thật, y như [parseSample].
+  ///
+  /// **Không bao giờ trả `null`, và không bao giờ ném.** Khác [parseSample] ở
+  /// chỗ ấy, vì ở đây không có trường nào đóng vai `status` — không có gì để
+  /// một khung "hỏng đến mức phải bỏ". Một khung RỖNG là khung hợp lệ và có
+  /// nghĩa hẳn hoi: "không còn gì để vẽ", đúng cái tầng nền phải nói ra sau một
+  /// lượt Hoàn tác. Bỏ nó đi là để đoạn thẳng cũ nằm lại trên màn.
+  ///
+  /// Mọi trường thiếu hoặc sai kiểu rơi về `null` (hoặc `false` với [
+  /// ArMeasureOverlay.bIsLive]) — cùng một lối với `mm`/`tolMm` của
+  /// [parseSample].
+  static ArMeasureOverlay parseOverlay(Map<Object?, Object?> raw) {
+    final rawBIsLive = raw['bIsLive'];
+
+    return ArMeasureOverlay(
+      pointA: _parsePoint(raw['ax'], raw['ay']),
+      pointB: _parsePoint(raw['bx'], raw['by']),
+      bIsLive: rawBIsLive is bool ? rawBIsLive : false,
+      distanceMm: _parseFinite(raw['distanceMm']),
+    );
+  }
+
+  /// Ghép hai nửa toạ độ thành một điểm. Thiếu hoặc hỏng **một** nửa thì cả
+  /// điểm về `null`.
+  ///
+  /// Bù 0 cho nửa thiếu là đặt một đầu đoạn thẳng lên mép trên hoặc mép trái
+  /// màn — một chỗ trông hoàn toàn hợp lệ, nên không ai soi ra được.
+  ///
+  /// Toạ độ ÂM đi qua nguyên vẹn: một đầu đoạn thẳng nằm ngoài mép màn là
+  /// chuyện thường ở tầm đo gần, và đoạn nối tới nó vẫn cắt qua khung hình. Thứ
+  /// bị loại là điểm nằm **sau lưng camera**, và nó bị loại ở tầng Swift — nơi
+  /// còn thành phần z của phép chiếu để mà loại.
+  static Offset? _parsePoint(Object? rawX, Object? rawY) {
+    final x = _parseFinite(rawX);
+    final y = _parseFinite(rawY);
+    if (x == null || y == null) return null;
+    return Offset(x, y);
+  }
+
+  /// Một số thực hữu hạn, hoặc `null`.
+  ///
+  /// Chặn cả NaN và vô cực, không chỉ chặn sai kiểu: `Offset(nan, nan)` dựng
+  /// được, so sánh được, và `Canvas.drawLine` chỉ lặng lẽ **không vẽ** nó —
+  /// một đoạn thẳng biến mất mà không lỗi nào nổ.
+  static double? _parseFinite(Object? raw) {
+    if (raw is! num) return null;
+    final value = raw.toDouble();
+    return value.isFinite ? value : null;
   }
 }
 

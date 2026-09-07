@@ -169,6 +169,30 @@ struct ArPointDiagnostics {
 /// vòng đời số 2 nói tới.
 protocol ArMeasureSessionOutput: AnyObject {
   func arMeasureSession(_ session: ArMeasureSession, didProduce sample: [String: Any])
+
+  /// Khung lớp phủ: hai đầu đoạn thẳng đã chiếu xuống toạ độ màn, kèm số đo
+  /// đang chạy. Đi kênh RIÊNG, nhịp riêng — xem [ArMeasureSession.refreshOverlay].
+  func arMeasureSession(_ session: ArMeasureSession, didProduceOverlay frame: [String: Any])
+}
+
+/// Kết quả một lượt dò tia từ tâm ngắm.
+///
+/// Bốn nhánh, và ba nhánh đầu KHÔNG gộp được vào một `SIMD3<Float>?`: "chưa tới
+/// nhịp dò" khác hẳn "vừa dò và trượt". Gộp lại thì mỗi lượt bị giãn nhịp đọc ra
+/// một lượt trượt, và cờ tâm ngắm tắt phụt sau 0,3 s đứng yên.
+private enum ArReticleProbe {
+  /// Trạng thái phiên không cho chấm điểm — không dò, và mọi thứ suy ra từ tia
+  /// đều hết nghĩa.
+  case unavailable
+
+  /// Chưa tới nhịp dò kế tiếp. Giữ nguyên mọi thứ của lượt trước.
+  case skipped
+
+  /// Trúng, kèm vị trí trong hệ toạ độ thế giới.
+  case hit(SIMD3<Float>)
+
+  /// Đã dò và không trúng gì.
+  case missed
 }
 
 /// Chặn `ARSCNView` dựng `SCNNode` cho anchor.
@@ -232,15 +256,24 @@ final class ArMeasureNodes {
       root.addChildNode(dot)
     }
     root.addChildNode(line)
-    update(points: [])
+    update(points: [], live: nil)
   }
 
-  /// Đặt lại hình theo các điểm đang có: không điểm nào, một, hoặc hai.
+  /// Đặt lại hình theo các điểm đang có — không điểm nào, một, hoặc hai — cộng
+  /// một đầu SỐNG tuỳ chọn.
+  ///
+  /// `live` là giao điểm của tia tâm ngắm ở khung hình này. Nó dựng nên một
+  /// ĐOẠN THẲNG và không dựng thêm chấm nào: một chấm nói "đã chấm ở đây", còn
+  /// đầu sống thì chưa chấm gì cả. Thứ đánh dấu nó là tâm ngắm của app, đã nằm
+  /// sẵn giữa màn.
+  ///
+  /// Đã đủ hai điểm thì `live` bị bỏ qua — đoạn thẳng nối hai điểm ĐÃ chấm, và
+  /// tia tâm ngắm lúc ấy không còn nói về phép đo này nữa.
   ///
   /// Không dựng lại node nào — chỉ dời chỗ và ẩn/hiện. Dựng lại `SCNGeometry`
   /// mỗi lượt là cấp phát trên luồng vẽ, và lượt gọi này đi cùng nhịp với số đo
   /// trôi.
-  func update(points: [SIMD3<Float>]) {
+  func update(points: [SIMD3<Float>], live: SIMD3<Float>?) {
     for (index, dot) in dots.enumerated() {
       if index < points.count {
         dot.simdPosition = points[index]
@@ -250,13 +283,24 @@ final class ArMeasureNodes {
       }
     }
 
-    guard points.count == 2 else {
+    // Hai đầu của đoạn, theo đúng thứ tự ưu tiên. Không có cặp nào thì KHÔNG
+    // vẽ: giữ lại đoạn của lượt trước là để một đoạn thẳng đứng yên trên màn
+    // giữa lúc người dùng vẫn đang rê máy, và một đoạn đứng yên đọc ra "đã
+    // chấm xong".
+    let ends: (SIMD3<Float>, SIMD3<Float>)?
+    if points.count >= 2 {
+      ends = (points[0], points[1])
+    } else if points.count == 1, let live {
+      ends = (points[0], live)
+    } else {
+      ends = nil
+    }
+
+    guard let (a, b) = ends else {
       line.isHidden = true
       return
     }
 
-    let a = points[0]
-    let b = points[1]
     let delta = b - a
     let length = simd_length(delta)
     // Hai điểm trùng nhau thì không có hướng nào để xoay hình trụ, và hình trụ
@@ -399,6 +443,20 @@ final class ArMeasureSession: NSObject {
   /// còn chịu đứng nhìn màn hình mờ; lâu hơn thì họ đã tự bấm đo lại rồi.
   private static let relocalizationDeadlineSeconds: TimeInterval = 5
 
+  /// Trần nhịp của kênh lớp phủ.
+  ///
+  /// Rời hẳn [minIntervalSeconds] của kênh trạng thái, và phải rời: lớp phủ nuôi
+  /// một lớp VẼ, nên nó cần nhanh; trạng thái và chẩn đoán thì đổi vài giây một
+  /// lần. Kéo hai thứ về cùng một nhịp là hỏng theo một trong hai chiều — lớp
+  /// phủ giật ở 15 Hz, hoặc mọi người nghe trạng thái phải lọc ba mươi khung mỗi
+  /// giây để tìm một thay đổi.
+  ///
+  /// 30 Hz chứ không phải 60 Hz theo khung hình: đây là một đoạn thẳng và một
+  /// con số milimét, không phải một hoạt hình. Nửa số khung của ARKit đã trên
+  /// ngưỡng mắt đọc được một vật đang trôi theo tay, và nó cắt một nửa lưu lượng
+  /// kênh nền tảng ở đúng quãng ARKit đang tốn nhiều CPU nhất.
+  private static let overlayMinIntervalSeconds = 1.0 / 30.0
+
   // MARK: - Nhịp dò tâm ngắm
 
   /// Bao lâu bắn một tia thăm dò cho tâm ngắm.
@@ -499,6 +557,24 @@ final class ArMeasureSession: NSObject {
 
   /// Lần dò gần nhất CHẠY, để giãn nhịp dò.
   private var lastAimProbeAt: TimeInterval = 0
+
+  /// Vị trí tia tâm ngắm đang trúng, hệ toạ độ thế giới. `nil` là không trúng gì.
+  ///
+  /// Đây là đầu SỐNG của đoạn thẳng, và nó KHÔNG có quãng ân hạn như
+  /// [aimLocked]: trượt một lượt là xoá ngay. Hai thứ đọc cùng một lượt dò
+  /// nhưng nói hai chuyện khác nhau — cờ nói một TRẠNG THÁI ("bấm được rồi"),
+  /// và một trạng thái nhấp nháy 10 lần/giây thì khó đọc; điểm này nói một VỊ
+  /// TRÍ, và giữ lại vị trí cũ là vẽ một đoạn thẳng tới chỗ không còn gì.
+  ///
+  /// [probeReticle] là chỗ DUY NHẤT ghi vào biến này.
+  private var liveHitPoint: SIMD3<Float>?
+
+  /// Khung lớp phủ bắn ra gần nhất — để chặn bắn lại y hệt, và để phát lại cho
+  /// người nghe tới muộn.
+  private var lastOverlayFrame: [String: Any]?
+
+  /// Mốc lần bắn lớp phủ gần nhất, để giãn nhịp 30 Hz.
+  private var lastOverlayEmitAt: TimeInterval = 0
 
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
@@ -1003,9 +1079,12 @@ final class ArMeasureSession: NSObject {
 
   // MARK: - Tâm ngắm
 
-  /// Dò xem tia từ tâm ngắm có trúng gì không, và cập nhật [aimLocked].
+  /// Dò xem tia từ tâm ngắm đang trúng gì, và ghi lại vị trí trúng.
   ///
-  /// Trả `true` khi cờ ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì mới.
+  /// Chỗ DUY NHẤT ghi vào [liveHitPoint]. Hai thứ đọc lượt dò này —
+  /// [refreshAimLock] lấy ra một cờ, [refreshOverlay] lấy ra một vị trí — nhưng
+  /// chỉ có một lượt raycast cho mỗi khung hình, và đó là chủ đích: raycast là
+  /// việc thật, không phải đọc một biến.
   ///
   /// Vì sao lớp này cần một lượt dò riêng, tách khỏi lúc bấm: máy thật báo về
   /// một cái nút không làm gì. Người dùng chĩa vào màn iPad đen bóng ở cự ly
@@ -1017,31 +1096,64 @@ final class ArMeasureSession: NSObject {
   /// máy tới khi nó khoá rồi mới bấm.
   ///
   /// Dò bằng ĐÚNG [raycastFromReticle] mà [placePoint] dùng, không phải một tia
-  /// gần giống. Cờ này là một lời hứa về cú bấm sắp tới; hai tia khác nhau là
-  /// một lời hứa hão, và nó hỏng theo đúng kiểu tệ nhất — tâm ngắm khoá lại,
+  /// gần giống. Kết quả này là một lời hứa về cú bấm sắp tới; hai tia khác nhau
+  /// là một lời hứa hão, và nó hỏng theo đúng kiểu tệ nhất — tâm ngắm khoá lại,
   /// người dùng bấm, không có gì xảy ra.
-  private func refreshAimLock(now: TimeInterval) -> Bool {
-    let was = aimLocked
-
+  private func probeReticle(now: TimeInterval) -> ArReticleProbe {
     // Ngoài hai trạng thái còn chấm được thì cú bấm tới không đặt nổi điểm nào
-    // dù tia có trúng hay không — kể cả khi đã đủ hai điểm, lúc mà cờ này hết
-    // sạch ý nghĩa. Hạ cờ, và KHÔNG dò: một lượt raycast ở đây là công đổ đi.
+    // dù tia có trúng hay không — kể cả khi đã đủ hai điểm, lúc mà lượt dò này
+    // hết sạch ý nghĩa. KHÔNG dò: một lượt raycast ở đây là công đổ đi.
     let status = currentStatus()
     guard status == .ready || status == .firstPointPlaced else {
-      aimLocked = false
-      lastAimHitAt = 0
-      return was != aimLocked
+      liveHitPoint = nil
+      return .unavailable
     }
 
-    guard now - lastAimProbeAt >= Self.aimProbeIntervalSeconds else { return false }
+    // Đúng MỘT điểm đã chấm nghĩa là đang có một đoạn thẳng SỐNG trên màn, và
+    // đầu kia của nó là chính kết quả tia này. Ở đó nhịp 10 Hz đọc ra một đoạn
+    // giật sáu khung một bước, nên lượt dò chạy mỗi khung hình — và CHỈ ở đó.
+    // Quãng còn lại, thứ duy nhất tia này nuôi là một cờ boolean, và mắt người
+    // không đọc nổi quá mười lần mỗi giây.
+    let hasLiveSegment = anchors.count == 1
+    guard hasLiveSegment || now - lastAimProbeAt >= Self.aimProbeIntervalSeconds
+    else { return .skipped }
     lastAimProbeAt = now
 
-    if raycastFromReticle() != nil {
+    guard let hit = raycastFromReticle() else {
+      // Trượt là XOÁ ngay, không có ân hạn: điểm này nói ra một VỊ TRÍ, và giữ
+      // lại vị trí của khung trước là vẽ một đoạn thẳng tới chỗ không còn gì —
+      // một đoạn đứng yên giữa lúc người dùng vẫn đang rê máy, đọc ra "đã chấm
+      // xong". Ân hạn là chuyện của cái CỜ, ở [refreshAimLock].
+      liveHitPoint = nil
+      return .missed
+    }
+
+    let column = hit.worldTransform.columns.3
+    let point = SIMD3<Float>(column.x, column.y, column.z)
+    liveHitPoint = point
+    return .hit(point)
+  }
+
+  /// Cập nhật [aimLocked] theo lượt dò của khung hình này.
+  ///
+  /// Trả `true` khi cờ ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì mới.
+  private func refreshAimLock(now: TimeInterval, probe: ArReticleProbe) -> Bool {
+    let was = aimLocked
+
+    switch probe {
+    case .unavailable:
+      aimLocked = false
+      lastAimHitAt = 0
+    case .skipped:
+      break
+    case .hit:
       lastAimHitAt = now
       aimLocked = true
-    } else if now - lastAimHitAt >= Self.aimUnlockGraceSeconds {
+    case .missed:
       // Trượt một lượt chưa đủ để hạ cờ — xem [aimUnlockGraceSeconds].
-      aimLocked = false
+      if now - lastAimHitAt >= Self.aimUnlockGraceSeconds {
+        aimLocked = false
+      }
     }
 
     return was != aimLocked
@@ -1117,8 +1229,33 @@ final class ArMeasureSession: NSObject {
     guard anchors.count == 2 else { return nil }
     let a = anchors[0].transform.columns.3
     let b = anchors[1].transform.columns.3
-    let metres = simd_distance(SIMD3(a.x, a.y, a.z), SIMD3(b.x, b.y, b.z))
-    return Double(metres) * 1000
+    return distanceMm(from: SIMD3(a.x, a.y, a.z), to: SIMD3(b.x, b.y, b.z))
+  }
+
+  /// Khoảng cách giữa hai điểm bất kỳ, milimét.
+  ///
+  /// Một hàm chứ không phải hai dòng chép hai chỗ, vì chỗ thứ hai gọi nó là
+  /// [refreshOverlay] — con số ĐANG CHẠY dưới nhãn nổi. Hai công thức rời nhau
+  /// là hai con số khác nhau về cùng một đoạn thẳng, trên cùng một màn, và
+  /// người dùng là người duy nhất thấy chúng cạnh nhau.
+  private func distanceMm(from a: SIMD3<Float>, to b: SIMD3<Float>) -> Double {
+    Double(simd_distance(a, b)) * 1000
+  }
+
+  /// Hệ toạ độ hiện tại còn đáng tin không.
+  ///
+  /// Ẩn ở đúng ba trạng thái mà nó không còn đáng tin: hai chấm vẫn nằm nguyên
+  /// chỗ cũ trong một hệ toạ độ đã trôi thì chúng chỉ vào sai vật, mà trông vẫn
+  /// như đang chỉ đúng. `needsMotion` KHÔNG nằm trong danh sách: nó chớp lên vì
+  /// nửa giây rung tay, và cho hình biến mất từng nhịp như thế còn khó đọc hơn.
+  ///
+  /// Một hàm dùng chung cho CẢ hình vẽ 3D lẫn khung lớp phủ. Hai cổng rời nhau
+  /// là lúc đoạn thẳng SceneKit biến mất trong khi nhãn Flutter còn lơ lửng
+  /// giữa màn với một con số — hoặc ngược lại.
+  private func coordinatesAreTrustworthy() -> Bool {
+    let status = currentStatus()
+    return status != .interrupted && status != .trackingLost
+      && status != .cameraUnauthorized
   }
 
   /// Dung sai ± của một quãng, tính bằng milimét.
@@ -1136,6 +1273,115 @@ final class ArMeasureSession: NSObject {
     return hasSceneDepth ? max(2, mm * 0.005) : max(5, mm * 0.015)
   }
 
+  // MARK: - Lớp phủ
+
+  /// Chiếu một điểm thế giới xuống toạ độ MÀN, đơn vị **point**.
+  ///
+  /// `SCNSceneRenderer.projectPoint` trả toạ độ theo **pixel của lớp vẽ**, còn
+  /// Flutter làm việc bằng point — nên phép chia cho `contentScaleFactor` dưới
+  /// đây LÀ một phép đổi đơn vị, không phải một lượt làm tròn cho đẹp. Ai gặp
+  /// cảnh nhãn Flutter nằm lệch đúng ba lần so với đoạn thẳng SceneKit trên một
+  /// máy @3x thì chỗ phải sửa là ĐÚNG dòng này, không phải chỗ vẽ.
+  ///
+  /// `nil` khi điểm nằm ngoài khối nhìn — chủ yếu là **sau lưng camera**. Phép
+  /// chiếu vẫn trả về một toạ độ x, y trông hoàn toàn hợp lệ cho những điểm ấy:
+  /// nó đi qua gốc, nên điểm sau lưng rơi xuống một chỗ đối xứng phía trước, và
+  /// không có gì trong hai con số nói ra điều đó. Thứ nói ra là z —
+  /// `projectPoint` cho z = 0 ở mặt phẳng cắt gần và z = 1 ở mặt phẳng cắt xa,
+  /// nên ngoài [0, 1] là ngoài khối nhìn.
+  ///
+  /// Toạ độ ÂM thì KHÔNG bị loại: một đầu đoạn thẳng ra ngoài mép màn trong khi
+  /// đầu kia còn trong khung là chuyện thường ở tầm đo gần, và đoạn nối tới nó
+  /// vẫn cắt qua khung hình. "Ngoài mép màn" và "sau lưng camera" là hai chuyện
+  /// khác nhau, và z là thứ duy nhất tách được chúng.
+  private func projectToScreen(_ world: SIMD3<Float>) -> CGPoint? {
+    let projected = sceneView.projectPoint(SCNVector3(world))
+    guard projected.z >= 0, projected.z <= 1 else { return nil }
+    guard projected.x.isFinite, projected.y.isFinite else { return nil }
+
+    // Chưa gắn vào cây view thì `contentScaleFactor` có thể là 0, và chia cho 0
+    // ra vô cực — một toạ độ mà `Canvas.drawLine` bên Dart chỉ lặng lẽ không vẽ.
+    let scale = sceneView.contentScaleFactor
+    guard scale > 0 else { return nil }
+
+    return CGPoint(x: CGFloat(projected.x) / scale, y: CGFloat(projected.y) / scale)
+  }
+
+  /// Cập nhật hình vẽ 3D và bắn khung lớp phủ.
+  ///
+  /// Hai việc trong một hàm vì chúng phải nói CÙNG một chuyện: đoạn thẳng
+  /// SceneKit và nhãn Flutter nằm chồng lên nhau trên màn, và người dùng là
+  /// người duy nhất thấy chúng cạnh nhau. Tách ra hai đường là mở chỗ cho một
+  /// đường ẩn hình còn đường kia vẫn vẽ nhãn.
+  ///
+  /// Nhịp: hình vẽ 3D cập nhật MỖI lượt gọi (nó là mấy phép gán vị trí, không
+  /// qua kênh nào); khung lớp phủ thì bị chặn ở [overlayMinIntervalSeconds].
+  ///
+  /// Không có "phát bù" như [publish]: nguồn kích hoạt của lớp phủ là khung
+  /// hình, và khi khung hình ngừng tới thì cũng không còn gì sống để vẽ. Mọi
+  /// đường ĐỔI TRẠNG THÁI đều đi qua `publish(force: true)`, và nó chuyển
+  /// `force` thẳng xuống đây.
+  private func refreshOverlay(now: TimeInterval, force: Bool) {
+    guard !isStopped else { return }
+
+    let trustworthy = coordinatesAreTrustworthy()
+    let placed = trustworthy ? currentPoints() : []
+    // Đầu sống chỉ có nghĩa khi đã chấm ĐÚNG một điểm. Không điểm nào thì không
+    // có gì để nối tới nó; đủ hai điểm thì đoạn thẳng đã nối hai điểm thật.
+    let live = placed.count == 1 ? liveHitPoint : nil
+
+    measureNodes.update(points: placed, live: live)
+
+    var frame: [String: Any] = [:]
+    let a = placed.first
+    let b = placed.count >= 2 ? placed[1] : live
+
+    if let a, let projected = projectToScreen(a) {
+      frame["ax"] = Double(projected.x)
+      frame["ay"] = Double(projected.y)
+    }
+    if let b, let projected = projectToScreen(b) {
+      frame["bx"] = Double(projected.x)
+      frame["by"] = Double(projected.y)
+    }
+    // Nói về TRẠNG THÁI của phép đo — "mới có một điểm, đầu kia còn chạy theo
+    // máy" — chứ không nói `bx`/`by` có mặt hay không. Vẫn TRUE ở những khung mà
+    // tia trượt và đầu B không có toạ độ nào: lúc ấy người vẽ vẫn cần biết mình
+    // đang ở giữa một phép đo chứ không phải trước một số đã chốt.
+    //
+    // Chỉ gửi khi TRUE, cùng lối với `aimLocked`: thiếu khoá nghĩa là "hai điểm
+    // đã chốt", đúng mặc định bên Dart.
+    if placed.count == 1 {
+      frame["bIsLive"] = true
+    }
+    // Đo trong KHÔNG GIAN 3D, không đo trên màn — nên nó vẫn có giá trị khi một
+    // trong hai đầu không chiếu được xuống màn. Hai điểm vẫn có thật; chỉ là
+    // không nhìn thấy.
+    if let a, let b {
+      frame["distanceMm"] = distanceMm(from: a, to: b)
+    }
+
+    if !force, now - lastOverlayEmitAt < Self.overlayMinIntervalSeconds { return }
+    // Khung y hệt khung trước thì không bắn. Nó cắt hai thứ cùng lúc: dòng khung
+    // RỖNG 30 lần/giây suốt quãng người dùng còn đang tìm điểm đầu tiên, và lượt
+    // bắn trùng khi một khung hình vừa đổi trạng thái vừa gọi `publish`.
+    if let last = lastOverlayFrame, (last as NSDictionary).isEqual(to: frame) { return }
+
+    lastOverlayEmitAt = now
+    lastOverlayFrame = frame
+    output?.arMeasureSession(self, didProduceOverlay: frame)
+  }
+
+  /// Phát lại khung lớp phủ gần nhất cho một người nghe vừa gắn vào.
+  ///
+  /// Cùng lý lẽ với [replayLastSample], mạnh hơn một bậc: lớp phủ KHÔNG bắn lại
+  /// một khung y hệt khung trước, nên một người nghe tới muộn trong lúc máy nằm
+  /// yên có thể đợi vô thời hạn.
+  func replayLastOverlay() {
+    guard !isStopped, let frame = lastOverlayFrame else { return }
+    output?.arMeasureSession(self, didProduceOverlay: frame)
+  }
+
   // MARK: - Bắn
 
   private func publish(force: Bool = false) {
@@ -1145,20 +1391,17 @@ final class ArMeasureSession: NSObject {
     trailingEmit = nil
 
     let status = currentStatus()
+    let now = CACurrentMediaTime()
 
     // Vẽ TRƯỚC mọi nhánh nén ở dưới. Hình phải bám hai điểm ngay cả ở những
     // lượt con số không đáng gửi đi (đổi dưới 0,5 mm, hoặc chưa tới nhịp 15 Hz)
     // — để nó rơi vào nhánh nén thì đoạn thẳng giật theo nhịp KÊNH thay vì theo
     // khung hình, và mắt đọc ra ngay.
     //
-    // Ẩn ở đúng ba trạng thái mà hệ toạ độ không còn đáng tin, cùng lý lẽ với
-    // việc che con số: hai chấm vẫn nằm nguyên chỗ cũ trong một hệ toạ độ đã
-    // trôi thì chúng chỉ vào sai vật, mà trông vẫn như đang chỉ đúng.
-    // `needsMotion` KHÔNG nằm trong danh sách: nó chớp lên vì nửa giây rung tay,
-    // và cho hình biến mất từng nhịp như thế còn khó đọc hơn.
-    let coordinatesAreTrustworthy =
-      status != .interrupted && status != .trackingLost && status != .cameraUnauthorized
-    measureNodes.update(points: coordinatesAreTrustworthy ? currentPoints() : [])
+    // Lớp phủ đi cùng chỗ này, và `force` truyền thẳng xuống: mọi đường gọi
+    // `publish(force: true)` là một đường ĐỔI TRẠNG THÁI (chấm, hoàn tác, tạm
+    // dừng, hỏng phiên), và ở đó khung lớp phủ phải đi ngay chứ không đợi nhịp.
+    refreshOverlay(now: now, force: force)
 
     let limitedReason = currentLimitedReason()
     // Số đo chỉ đi kèm khi hệ toạ độ còn đáng tin. Mất bám hay đang gián đoạn
@@ -1173,7 +1416,6 @@ final class ArMeasureSession: NSObject {
     // Chặn thêm một lượt ở đây thì không còn đường nào để một cờ cũ lọt ra
     // ngoài kênh.
     let aimLocked = (status == .ready || status == .firstPointPlaced) && self.aimLocked
-    let now = CACurrentMediaTime()
 
     // `limitedReason` và `aimLocked` nằm trong điều kiện gộp cùng `status`, và
     // cả hai vì cùng một lý do: bộ nén ở dưới neo vào "số đo đổi quá 0,5 mm",
@@ -1361,6 +1603,9 @@ final class ArMeasureSession: NSObject {
     anchors.removeAll()
     pointDiagnostics.removeAll()
     lastMm = nil
+    // Đầu sống của đoạn thẳng đọc từ lượt dò của khung hình, và `reset()` dựng
+    // lại cả hệ toạ độ — điểm của lượt dò trước nằm trong hệ toạ độ CŨ.
+    liveHitPoint = nil
   }
 }
 
@@ -1465,9 +1710,12 @@ extension ArMeasureSession: ARSessionDelegate {
     // và nó chỉ có nghĩa ở đúng cái quãng mà lời chặn cũ cắt bỏ — lúc người
     // dùng đang ngắm điểm đầu tiên.
     //
-    // [refreshAimLock] tự giãn nhịp xuống 10 Hz và tự bỏ qua khi trạng thái
-    // không cho chấm, nên đây không phải một lượt raycast mỗi khung hình.
-    var shouldPublish = refreshAimLock(now: CACurrentMediaTime())
+    // [probeReticle] tự giãn nhịp xuống 10 Hz và tự bỏ qua khi trạng thái không
+    // cho chấm, nên đây không phải một lượt raycast mỗi khung hình — trừ đúng
+    // quãng đang có đoạn thẳng SỐNG, là quãng nó phải chạy mỗi khung hình.
+    let now = CACurrentMediaTime()
+    let probe = probeReticle(now: now)
+    var shouldPublish = refreshAimLock(now: now, probe: probe)
 
     // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.
     // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit
@@ -1476,8 +1724,14 @@ extension ArMeasureSession: ARSessionDelegate {
       shouldPublish = true
     }
 
-    guard shouldPublish else { return }
-    publish()
+    // Lớp phủ chạy MỖI khung hình, không đợi `shouldPublish`. Đầu sống của đoạn
+    // thẳng đổi ở mỗi khung mà không đổi trạng thái nào và không đổi số đo nào,
+    // nên nếu nó đi nhờ lối rẽ này thì nó không bao giờ được bắn.
+    if shouldPublish {
+      publish()
+    } else {
+      refreshOverlay(now: now, force: false)
+    }
   }
 
   func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {

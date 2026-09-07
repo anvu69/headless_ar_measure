@@ -637,4 +637,231 @@ void main() {
       expect(got.map((s) => s.status), [ArMeasureStatus.ready]);
     });
   });
+
+  // Lớp phủ: hai đầu đoạn thẳng ở toạ độ MÀN, và số đo đang chạy.
+  //
+  // Toạ độ 3D chỉ tầng Swift chiếu được, nên mọi thứ dưới đây là hợp đồng ĐỌC
+  // một khung đã chiếu sẵn. Cả nhóm canh cùng một kiểu hỏng CÂM: một trường sai
+  // kiểu mà ném thì cả luồng chết, và lớp phủ đông cứng ở khung cuối — tức là
+  // một đoạn thẳng nằm lại giữa màn, đọc ra "đã chấm xong".
+  group('parseOverlay', () {
+    test('đủ trường', () {
+      final o = ArMeasure.parseOverlay({
+        'ax': 120.0,
+        'ay': 240.5,
+        'bx': 300.0,
+        'by': 90.0,
+        'bIsLive': true,
+        'distanceMm': 382.0,
+      });
+
+      expect(o.pointA, const Offset(120, 240.5));
+      expect(o.pointB, const Offset(300, 90));
+      expect(o.bIsLive, isTrue);
+      expect(o.distanceMm, 382);
+    });
+
+    // Khung RỖNG là một khung hợp lệ, không phải một khung hỏng: nó là cách
+    // tầng nền nói "không còn gì để vẽ" sau một lượt Hoàn tác hay một lượt mất
+    // bám. Bỏ nó đi thì đoạn thẳng cũ nằm lại trên màn.
+    test('khung rỗng: mọi trường null, không ném', () {
+      late ArMeasureOverlay o;
+      expect(() => o = ArMeasure.parseOverlay({}), returnsNormally);
+
+      expect(o.pointA, isNull);
+      expect(o.pointB, isNull);
+      expect(o.bIsLive, isFalse);
+      expect(o.distanceMm, isNull);
+    });
+
+    // Một nửa toạ độ KHÔNG dựng nổi một điểm. Lấy nửa còn lại rồi bù 0 là đặt
+    // một đầu đoạn thẳng lên mép trên màn — một chỗ trông hoàn toàn hợp lệ.
+    test('thiếu một nửa toạ độ thì cả điểm về null, không bù 0', () {
+      expect(ArMeasure.parseOverlay({'ax': 120.0}).pointA, isNull);
+      expect(ArMeasure.parseOverlay({'ay': 240.0}).pointA, isNull);
+      expect(ArMeasure.parseOverlay({'bx': 300.0}).pointB, isNull);
+      expect(ArMeasure.parseOverlay({'by': 90.0}).pointB, isNull);
+    });
+
+    test('toạ độ sai kiểu không ném, điểm về null', () {
+      late ArMeasureOverlay o;
+      expect(() {
+        o = ArMeasure.parseOverlay({
+          'ax': 'không phải số',
+          'ay': 240.0,
+          'bx': 300.0,
+          'by': 90.0,
+        });
+      }, returnsNormally);
+
+      expect(o.pointA, isNull);
+      expect(o.pointB, const Offset(300, 90));
+    });
+
+    test('distanceMm sai kiểu không ném, và không kéo hai điểm theo', () {
+      late ArMeasureOverlay o;
+      expect(() {
+        o = ArMeasure.parseOverlay({
+          'ax': 10.0,
+          'ay': 20.0,
+          'distanceMm': 'không phải số',
+        });
+      }, returnsNormally);
+
+      expect(o.distanceMm, isNull);
+      expect(o.pointA, const Offset(10, 20));
+    });
+
+    test('bIsLive sai kiểu về false, không ném', () {
+      expect(
+        ArMeasure.parseOverlay({'bIsLive': 'không phải bool'}).bIsLive,
+        isFalse,
+      );
+    });
+
+    // Toạ độ ÂM là toạ độ HỢP LỆ: một đầu đoạn thẳng ra ngoài mép màn trong khi
+    // đầu kia còn trong khung là chuyện thường ở tầm đo gần. Lọc số âm ở đây là
+    // cắt cụt đúng những đoạn dài nhất, và cắt im lặng.
+    //
+    // Thứ phân biệt "ngoài mép màn" với "sau lưng camera" là thành phần z của
+    // phép chiếu, và nó được kiểm ở tầng Swift chứ không ở đây: tới Dart thì z
+    // đã không còn.
+    test('toạ độ âm giữ nguyên, không bị lọc', () {
+      final o = ArMeasure.parseOverlay({
+        'ax': -40.0,
+        'ay': 120.0,
+        'bx': 300.0,
+        'by': -18.0,
+      });
+
+      expect(o.pointA, const Offset(-40, 120));
+      expect(o.pointB, const Offset(300, -18));
+    });
+
+    // NaN đi qua `Offset` không ném gì cả, và `Canvas.drawLine` chỉ lặng lẽ
+    // không vẽ. Một đoạn thẳng biến mất mà không lỗi nào nổ là đúng dạng hỏng
+    // cả gói này đi tránh, nên chặn ngay ở cửa.
+    test('toạ độ không hữu hạn về null, không dựng Offset câm', () {
+      expect(
+        ArMeasure.parseOverlay({'ax': double.nan, 'ay': 10.0}).pointA,
+        isNull,
+      );
+      expect(
+        ArMeasure.parseOverlay({'bx': double.infinity, 'by': 10.0}).pointB,
+        isNull,
+      );
+      expect(
+        ArMeasure.parseOverlay({
+          'ax': 1.0,
+          'ay': 2.0,
+          'distanceMm': double.nan,
+        }).distanceMm,
+        isNull,
+      );
+    });
+
+    test('số nguyên đọc được y như số thực', () {
+      final o = ArMeasure.parseOverlay({
+        'ax': 120,
+        'ay': 240,
+        'distanceMm': 382,
+      });
+
+      expect(o.pointA, const Offset(120, 240));
+      expect(o.distanceMm, 382.0);
+    });
+  });
+
+  group('overlay', () {
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        ..setMockStreamHandler(
+          const EventChannel(ArMeasure.overlayChannelName),
+          null,
+        )
+        ..setMockStreamHandler(
+          const EventChannel(ArMeasure.eventChannelName),
+          null,
+        );
+    });
+
+    test('khung hợp lệ thành ArMeasureOverlay', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            const EventChannel(ArMeasure.overlayChannelName),
+            MockStreamHandler.inline(
+              onListen: (arguments, sink) {
+                sink.success({
+                  'ax': 120.0,
+                  'ay': 240.0,
+                  'bx': 300.0,
+                  'by': 90.0,
+                  'bIsLive': true,
+                  'distanceMm': 382.0,
+                });
+              },
+            ),
+          );
+
+      final got = await ArMeasure.overlay.first;
+
+      expect(got.pointA, const Offset(120, 240));
+      expect(got.pointB, const Offset(300, 90));
+      expect(got.bIsLive, isTrue);
+      expect(got.distanceMm, 382);
+    });
+
+    // Cùng lý lẽ với `samples`: luồng này nuôi một lớp vẽ 30 Hz, nên nó chết là
+    // lớp phủ đông cứng ở khung cuối và không có gì trên màn nói ra.
+    test(
+      'khung hỏng bị bỏ, lỗi kênh không giết luồng, khung sau vẫn tới',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockStreamHandler(
+              const EventChannel(ArMeasure.overlayChannelName),
+              MockStreamHandler.inline(
+                onListen: (arguments, sink) {
+                  sink.success('không phải map');
+                  sink.error(code: 'boom');
+                  sink.success({'ax': 1.0, 'ay': 2.0});
+                },
+              ),
+            );
+
+        final got = <ArMeasureOverlay>[];
+        final sub = ArMeasure.overlay.listen(got.add);
+        await pumpEventQueue();
+        await sub.cancel();
+
+        expect(got.map((o) => o.pointA), [const Offset(1, 2)]);
+      },
+    );
+
+    // HAI kênh, không phải một. `samples` mang trạng thái và chẩn đoán ở nhịp
+    // thấp; gộp lớp phủ 30 Hz vào đó là bắt mọi người nghe trạng thái lọc ba
+    // mươi khung mỗi giây để tìm một thay đổi mỗi vài giây.
+    test('khung trạng thái KHÔNG rơi vào luồng lớp phủ', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            const EventChannel(ArMeasure.eventChannelName),
+            MockStreamHandler.inline(
+              onListen: (arguments, sink) {
+                sink.success({
+                  'status': 'measured',
+                  'mm': 812.0,
+                  'tolMm': 12.0,
+                });
+              },
+            ),
+          );
+
+      final got = <ArMeasureOverlay>[];
+      final sub = ArMeasure.overlay.listen(got.add);
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(got, isEmpty);
+      expect(ArMeasure.overlayChannelName, isNot(ArMeasure.eventChannelName));
+    });
+  });
 }
