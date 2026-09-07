@@ -14,6 +14,17 @@ First release.
 * `ArMeasureStatus` — eight values covering the full lifecycle of a measuring
   session, including the interruptions that are not the app's fault
   (`interrupted`, `cameraUnauthorized`).
+* `ArMeasureSample.limitedReason` — `excessiveMotion` or `insufficientFeatures`
+  when the status is `needsMotion`. Both ARKit reasons map to that one status,
+  but the fix for them is opposite: one asks the user to slow down, the other
+  to move around looking for texture. Without this field the screen has to pick
+  one sentence and be wrong half the time. `null` when the platform does not
+  say, so a screen still has to have a sentence that works for both.
+* `ArMeasureSample.recoverable` — `false` only for permanent failures
+  (`unsupportedConfiguration`, `sensorUnavailable`, and a device that cannot
+  run world tracking at all). These arrive as `trackingLost`, which is true but
+  makes a screen invite the user to keep moving the phone forever. Defaults to
+  `true` when the key is absent.
 * `ArMeasureController` — `placePoint`, `undoPoint`, `reset`, `pause`,
   `resume`, `dispose`, all aimed at one platform view id. `placePoint` returns
   `false` when the ray hit nothing; every other command is a silent no-op when

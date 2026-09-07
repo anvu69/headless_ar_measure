@@ -27,6 +27,16 @@ void main() {
           'trong cùng một lượt, nếu không mọi mẫu sẽ bị parseSample bỏ im lặng',
     );
   });
+
+  test('hai chuỗi lý do bám hạn chế khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArMeasureLimitedReason'),
+      ArMeasureLimitedReason.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArMeasureLimitedReason bên Swift và bên Dart đã lệch — lý do lạ '
+          'bị parseSample bỏ về null, và màn mất cách nói đúng câu',
+    );
+  });
 }
 
 /// Trích tên các `case` của một `enum <tên>: String` trong mã Swift.

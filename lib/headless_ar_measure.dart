@@ -18,6 +18,22 @@ enum ArMeasureStatus {
   cameraUnauthorized,
 }
 
+/// Vì sao ARKit đang bám hạn chế.
+///
+/// Chỉ có nghĩa khi [ArMeasureSample.status] là [ArMeasureStatus.needsMotion].
+/// Hai lý do dưới đây đổ chung vào một trạng thái vì cả hai đều là "đang không
+/// đo được, chưa hỏng hẳn" — nhưng cách gỡ thì **ngược nhau**, nên trạng thái
+/// một mình không đủ để màn nói đúng câu. Đây là lý do trường này tồn tại chứ
+/// không phải một trạng thái thứ chín.
+enum ArMeasureLimitedReason {
+  /// Máy đang bị rê quá nhanh. Câu đúng: **chậm lại**.
+  excessiveMotion,
+
+  /// Cảnh quá trơn, thiếu vân để bám. Câu đúng: **rê quanh tìm bề mặt có vân**
+  /// — tức là bảo người dùng làm đúng cái mà [excessiveMotion] bảo họ đừng làm.
+  insufficientFeatures,
+}
+
 /// Một số đo khoảng cách.
 class ArMeasurement {
   const ArMeasurement({
@@ -52,12 +68,35 @@ class ArAvailability {
 
 /// Một lần đọc từ kênh sự kiện: trạng thái, kèm số đo nếu trạng thái đó có.
 class ArMeasureSample {
-  const ArMeasureSample({required this.status, this.measurement});
+  const ArMeasureSample({
+    required this.status,
+    this.measurement,
+    this.limitedReason,
+    this.recoverable = true,
+  });
 
   final ArMeasureStatus status;
 
   /// `null` ở mọi trạng thái không mang số đo (vd. [ArMeasureStatus.ready]).
   final ArMeasurement? measurement;
+
+  /// Vì sao đang bám hạn chế, khi [status] là [ArMeasureStatus.needsMotion].
+  ///
+  /// `null` ở mọi trạng thái khác, và cũng `null` khi tầng nền không nói được
+  /// (ARKit thêm một lý do mới ở bản iOS sau). Màn phải chịu được `null`: lúc
+  /// ấy câu an toàn duy nhất là câu viết được cho cả hai lý do.
+  final ArMeasureLimitedReason? limitedReason;
+
+  /// Phiên này còn tự gỡ được không.
+  ///
+  /// `false` chỉ ở các hỏng **vĩnh viễn**: máy không chạy nổi cấu hình đang
+  /// dùng, hoặc cảm biến không dùng được. Với chúng, [ArMeasureStatus.trackingLost]
+  /// vẫn đúng nhưng lời khuyên đi kèm thì sai — mời người dùng "rê máy chậm và
+  /// đều" cho một phiên không bao giờ chạy lại được là bắt họ đợi mãi mãi.
+  ///
+  /// Mặc định `true`: thiếu khoá thì coi như còn gỡ được, vì đó là dạng hỏng
+  /// phổ biến hơn hẳn và cũng là hành vi của mọi bản trước khoá này.
+  final bool recoverable;
 }
 
 /// Cửa vào duy nhất tới phiên đo AR.
@@ -166,7 +205,23 @@ class ArMeasure {
         ? null
         : ArMeasurement(mm: mm, tolMm: tolMm, snappedToEdge: snappedToEdge);
 
-    return ArMeasureSample(status: status, measurement: measurement);
+    // Khoá phụ, và cả hai đều KHÔNG được giết mẫu khi lạ hay thiếu: một bản
+    // Swift cũ không gửi chúng, và ARKit có thể thêm một lý do mới ở bản iOS
+    // sau. Cả hai đường đều rơi về mặc định, y như "thiếu mm" ở trên.
+    final limitedReason = switch (raw['limitedReason']) {
+      'excessiveMotion' => ArMeasureLimitedReason.excessiveMotion,
+      'insufficientFeatures' => ArMeasureLimitedReason.insufficientFeatures,
+      _ => null,
+    };
+    final rawRecoverable = raw['recoverable'];
+    final recoverable = rawRecoverable is bool ? rawRecoverable : true;
+
+    return ArMeasureSample(
+      status: status,
+      measurement: measurement,
+      limitedReason: limitedReason,
+      recoverable: recoverable,
+    );
   }
 }
 

@@ -22,6 +22,23 @@ enum ArMeasureStatus: String {
   case cameraUnauthorized
 }
 
+/// Vì sao ARKit đang bám hạn chế — khoá phụ đi kèm `needsMotion`.
+///
+/// `.excessiveMotion` và `.insufficientFeatures` đổ chung vào MỘT trạng thái vì
+/// cả hai đều là "đang không đo được, chưa hỏng hẳn". Nhưng cách gỡ thì ngược
+/// nhau: một cái bảo người dùng chậm lại, cái kia bảo rê máy quanh tìm bề mặt
+/// có vân. Không nói ra thì màn phải chọn một câu và sai một nửa số lần.
+///
+/// Là khoá phụ chứ không phải trạng thái thứ chín: `ArMeasure.parseSample` bỏ
+/// qua khoá lạ một cách vô hại, nên bản Dart cũ vẫn đọc được mẫu này.
+///
+/// `rawValue` **LÀ** hợp đồng, y như `ArMeasureStatus` ở trên — và
+/// `test/status_contract_test.dart` canh cả hai enum.
+enum ArMeasureLimitedReason: String {
+  case excessiveMotion
+  case insufficientFeatures
+}
+
 /// Đường ra của một phiên: một map đã sẵn sàng cho `EventChannel`.
 ///
 /// Là protocol chứ không phải closure để phía nhận giữ được **yếu**. Một
@@ -93,6 +110,14 @@ final class ArMeasureSession: NSObject {
   /// Lỗi dính: ARKit đã dừng phiên, chỉ `reset()` mới gỡ.
   private var failure: ArMeasureStatus?
 
+  /// Lỗi đang dính có gỡ được không. Chỉ có nghĩa khi [failure] khác `nil`.
+  ///
+  /// `unsupportedConfiguration` và `sensorUnavailable` (và cả máy không chạy
+  /// nổi `ARWorldTrackingConfiguration`) là hỏng VĨNH VIỄN: không lượt rê máy
+  /// nào gỡ được, và `reset()` chỉ dựng lại đúng cái lỗi ấy. Gộp chúng vào
+  /// `trackingLost` trần thì màn mời người dùng "rê máy chậm và đều" mãi mãi.
+  private var failureIsRecoverable = true
+
   private var isPaused = false
   private var isInterrupted = false
   private var isStopped = false
@@ -101,6 +126,7 @@ final class ArMeasureSession: NSObject {
   private var trailingEmit: DispatchWorkItem?
 
   private var lastStatus: ArMeasureStatus?
+  private var lastLimitedReason: ArMeasureLimitedReason?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
 
@@ -178,8 +204,10 @@ final class ArMeasureSession: NSObject {
     guard ARWorldTrackingConfiguration.isSupported else {
       // Gói không có trạng thái "máy không chạy được ARKit" — app phải hỏi
       // `isAvailable()` TRƯỚC khi dựng view. Tới được đây nghĩa là app bỏ qua
-      // bước ấy, và thứ trung thực nhất còn lại là báo mất bám.
+      // bước ấy, và thứ trung thực nhất còn lại là báo mất bám — kèm cờ nói
+      // rằng nó VĨNH VIỄN, vì máy này sẽ không bao giờ chạy được ARKit.
       failure = .trackingLost
+      failureIsRecoverable = false
       publish(force: true)
       return
     }
@@ -188,7 +216,12 @@ final class ArMeasureSession: NSObject {
     case .denied, .restricted:
       // Không gọi `run` khi biết chắc sẽ bị từ chối: `run` trong tình trạng này
       // cho ra một màn đen câm, còn ARKit thì báo lỗi muộn hơn nhiều.
+      //
+      // KHÔNG đặt `failureIsRecoverable = false`: `cameraUnauthorized` đã là
+      // một trạng thái riêng, và app đã biết chính xác phải làm gì với nó
+      // (mở Cài đặt). Cờ ấy chỉ để cứu những lỗi đội lốt `trackingLost`.
       failure = .cameraUnauthorized
+      failureIsRecoverable = true
       publish(force: true)
       return
     case .notDetermined, .authorized:
@@ -198,6 +231,7 @@ final class ArMeasureSession: NSObject {
     }
 
     failure = nil
+    failureIsRecoverable = true
     sceneView.session.run(makeConfiguration(), options: options)
     publish(force: true)
   }
@@ -363,6 +397,25 @@ final class ArMeasureSession: NSObject {
     }
   }
 
+  /// Lý do phụ đi kèm `needsMotion`. `nil` ở mọi trạng thái khác.
+  ///
+  /// Cùng một trạng thái, hai lời khuyên ngược nhau — xem [ArMeasureLimitedReason].
+  private func currentLimitedReason() -> ArMeasureLimitedReason? {
+    guard currentStatus() == .needsMotion else { return nil }
+    guard let trackingState, case .limited(let reason) = trackingState else { return nil }
+    switch reason {
+    case .excessiveMotion:
+      return .excessiveMotion
+    case .insufficientFeatures:
+      return .insufficientFeatures
+    default:
+      // `.initializing` và `.relocalizing` không bao giờ tới được đây (chúng ra
+      // trạng thái khác), và một lý do ARKit thêm sau này thì mình chưa có câu
+      // nào đúng để nói — im lặng tốt hơn đoán bừa.
+      return nil
+    }
+  }
+
   /// Khoảng cách giữa hai điểm, tính bằng milimét. `nil` khi chưa đủ hai điểm.
   private func currentDistanceMm() -> Double? {
     guard anchors.count == 2 else { return nil }
@@ -396,13 +449,17 @@ final class ArMeasureSession: NSObject {
     trailingEmit = nil
 
     let status = currentStatus()
+    let limitedReason = currentLimitedReason()
     // Số đo chỉ đi kèm khi hệ toạ độ còn đáng tin. Mất bám hay đang gián đoạn
     // thì hai điểm vẫn còn đó, nhưng khoảng cách giữa chúng đã không còn nghĩa
     // — spec gọi đây là "che con số đang trôi".
     let mm = status == .measured ? currentDistanceMm() : nil
     let now = CACurrentMediaTime()
 
-    if !force, status == lastStatus {
+    // `limitedReason` nằm trong điều kiện gộp cùng `status`: đổi từ "rê quá
+    // nhanh" sang "thiếu vân" mà không đổi trạng thái là đổi hẳn câu màn phải
+    // nói, nên nó không được rơi vào nhánh nén.
+    if !force, status == lastStatus, limitedReason == lastLimitedReason {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
 
@@ -428,6 +485,14 @@ final class ArMeasureSession: NSObject {
     // `measured` mà chưa thấy số, vì `measured` theo định nghĩa là "hai điểm và
     // đang bám" — tức là `mm` luôn tính được, và nó nằm ngay trong map này.
     var sample: [String: Any] = ["status": status.rawValue]
+    if let limitedReason {
+      sample["limitedReason"] = limitedReason.rawValue
+    }
+    // Chỉ gửi khi FALSE. Thiếu khoá nghĩa là "còn gỡ được" — đúng mặc định bên
+    // Dart, và đúng hành vi của mọi bản trước khoá này.
+    if failure != nil, !failureIsRecoverable {
+      sample["recoverable"] = false
+    }
     if let mm {
       sample["mm"] = mm
       sample["tolMm"] = toleranceMm(forMm: mm)
@@ -437,6 +502,7 @@ final class ArMeasureSession: NSObject {
     }
 
     lastStatus = status
+    lastLimitedReason = limitedReason
     lastMm = mm
     lastEmitAt = now
     lastSample = sample
@@ -535,10 +601,26 @@ extension ArMeasureSession: ARSessionDelegate {
   func session(_ session: ARSession, didFailWithError error: Error) {
     // ARKit đã dừng phiên trước khi gọi vào đây. Lỗi dính lại cho tới `reset()`
     // — chạy lại ngay lập tức chỉ dựng lại đúng cái lỗi vừa xảy ra.
-    if let arError = error as? ARError, arError.code == .cameraUnauthorized {
+    let code = (error as? ARError)?.code
+    switch code {
+    case .some(.cameraUnauthorized):
       failure = .cameraUnauthorized
-    } else {
+      failureIsRecoverable = true
+
+    case .some(.unsupportedConfiguration), .some(.sensorUnavailable):
+      // Hai mã này là hỏng VĨNH VIỄN: máy không chạy nổi cấu hình đang dùng,
+      // hoặc cảm biến không dùng được. Trạng thái vẫn là `trackingLost` — thêm
+      // một trạng thái thứ chín thì mọi app đang dùng gói phải sửa — nhưng cờ
+      // đi kèm cho màn biết đừng mời người dùng rê máy cho một phiên chết hẳn.
+      //
+      // `sensorFailed` (102) CỐ Ý không nằm đây: nó có thể chỉ là máy quá nóng,
+      // và cái đó tự khỏi.
       failure = .trackingLost
+      failureIsRecoverable = false
+
+    default:
+      failure = .trackingLost
+      failureIsRecoverable = true
     }
     publish(force: true)
   }

@@ -82,6 +82,72 @@ void main() {
     test('map rỗng trả null, không ném', () {
       expect(ArMeasure.parseSample(const {}), isNull);
     });
+
+    // `.excessiveMotion` và `.insufficientFeatures` đổ chung vào `needsMotion`,
+    // nhưng cách gỡ thì NGƯỢC nhau: một cái bảo người dùng chậm lại, cái kia
+    // bảo rê máy quanh tìm bề mặt có vân. Không có trường này thì màn không có
+    // cách nào nói đúng câu nào — nó phải chọn một câu và sai một nửa số lần.
+    test('limitedReason đọc được cả hai lý do', () {
+      final fast = ArMeasure.parseSample({
+        'status': 'needsMotion',
+        'limitedReason': 'excessiveMotion',
+      });
+      final bare = ArMeasure.parseSample({
+        'status': 'needsMotion',
+        'limitedReason': 'insufficientFeatures',
+      });
+
+      expect(fast?.limitedReason, ArMeasureLimitedReason.excessiveMotion);
+      expect(bare?.limitedReason, ArMeasureLimitedReason.insufficientFeatures);
+    });
+
+    // Khoá mới KHÔNG được phá tương thích: một bản Swift cũ không gửi nó, và
+    // mẫu ấy vẫn phải hợp lệ y như trước.
+    test('thiếu limitedReason thì về null, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({'status': 'needsMotion'});
+
+      expect(s?.status, ArMeasureStatus.needsMotion);
+      expect(s?.limitedReason, isNull);
+    });
+
+    // ARKit có thể thêm lý do mới ở một bản iOS sau. Lý do lạ về `null` chứ
+    // KHÔNG được giết cả mẫu — trạng thái vẫn là thứ màn cần nhất.
+    test('limitedReason lạ không giết mẫu, chỉ về null', () {
+      final s = ArMeasure.parseSample({
+        'status': 'needsMotion',
+        'limitedReason': 'sao chổi',
+      });
+
+      expect(s?.status, ArMeasureStatus.needsMotion);
+      expect(s?.limitedReason, isNull);
+    });
+
+    // `unsupportedConfiguration` và `sensorUnavailable` là hỏng VĨNH VIỄN.
+    // Gộp chúng vào `trackingLost` trần thì màn mời người dùng "rê máy chậm và
+    // đều" mãi mãi, cho một phiên không bao giờ chạy lại được.
+    test('recoverable false đi kèm lỗi vĩnh viễn', () {
+      final s = ArMeasure.parseSample({
+        'status': 'trackingLost',
+        'recoverable': false,
+      });
+
+      expect(s?.status, ArMeasureStatus.trackingLost);
+      expect(s?.recoverable, isFalse);
+    });
+
+    test('thiếu hoặc sai kiểu recoverable thì mặc định là true', () {
+      expect(
+        ArMeasure.parseSample({'status': 'trackingLost'})?.recoverable,
+        isTrue,
+      );
+      expect(
+        ArMeasure.parseSample({
+          'status': 'trackingLost',
+          'recoverable': 'not-a-bool',
+        })?.recoverable,
+        isTrue,
+      );
+    });
   });
 
   group('isAvailable', () {
