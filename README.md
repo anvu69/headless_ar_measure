@@ -123,6 +123,32 @@ happened:
 missing plugin, a disposed view. Never `missed`: inviting someone to keep
 moving the phone will not revive a dead channel.
 
+### Every sample carries how the measurement happened
+
+`ArMeasureSample.diagnostics` holds one `ArPointDiagnostics` per placed point,
+in the order they were placed — one entry after the first tap, two once both
+are down, `null` before any point exists or on a native build older than this
+field.
+
+| Field | What it is |
+|---|---|
+| `target` | which raycast layer actually hit: a confirmed `existingPlaneGeometry` or a guessed `estimatedPlane`. Read off `ARRaycastResult.target`, not inferred |
+| `tracking` | raw ARKit tracking state at the tap. Six values — the five `.limited` reasons are **not** collapsed into one word |
+| `sessionAgeMs` | milliseconds since the last `run(...)`. Resets with the coordinate system, so it answers "was the session still warming up?" |
+| `cameraDistanceMm` | camera centre to the placed point |
+| `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing |
+| `planeAlignment`, `planeWidthMm`, `planeHeightMm` | the `ARPlaneAnchor` that was hit, if any. All three `null` when the hit landed on an estimated plane |
+
+Why it exists: a tile edge measured 382mm against a true 400, two tiles measured
+795 against 800, and every explanation anyone proposed fitted both numbers
+equally well — because the sample said nothing about the conditions either point
+was placed under. None of this feeds the distance calculation. It is a recording
+layer, and it says what the machine did.
+
+Every field is nullable on purpose. No camera frame, a value ARKit adds in a
+later iOS, an older native build — all of it comes back `null` rather than a
+plausible default, because a plausible default here is manufactured evidence.
+
 ### `dispose()` is not optional
 
 iOS has no dispose callback for a platform view — `FlutterPlatformView` has

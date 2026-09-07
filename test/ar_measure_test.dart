@@ -183,6 +183,259 @@ void main() {
     });
   });
 
+  /// Chẩn đoán: ảnh chụp của ĐIỀU KIỆN mỗi điểm được chấm.
+  ///
+  /// Cả nhóm này neo vào một chuyện đã trả giá: một cuộc điều tra mười sáu tác
+  /// nhân bác sạch mọi giả thuyết về sai lệch số đo, và bác vì cùng một lý do
+  /// ở mọi giả thuyết — mẫu bắn lên Dart không mang một mẩu nào về việc phép đo
+  /// ĐÃ diễn ra thế nào, nên mọi lời giải đều khớp mọi số đo và không lời nào
+  /// kiểm được.
+  ///
+  /// Luật của cả nhóm: **không đường nào được ném, không đường nào được giết
+  /// mẫu**. Chẩn đoán là thứ đi kèm; một khoá hỏng ở đây mà làm mất cả mẫu thì
+  /// tầng chẩn đoán tự nó thành một lỗi sản phẩm.
+  group('parseSample · chẩn đoán', () {
+    Map<Object?, Object?> diemDay({String target = 'existingPlaneGeometry'}) =>
+        {
+          'target': target,
+          'tracking': 'normal',
+          'sessionAgeMs': 4210,
+          'cameraDistanceMm': 612.5,
+          'rayAngleDeg': 63.25,
+          'planeAlignment': 'horizontal',
+          'planeWidthMm': 1200.0,
+          'planeHeightMm': 800.0,
+        };
+
+    test('hai điểm, đủ trường, đúng THỨ TỰ chấm', () {
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+        'snappedToEdge': false,
+        'diagnostics': {
+          'points': [diemDay(), diemDay(target: 'estimatedPlane')],
+        },
+      });
+
+      final points = s?.diagnostics?.points;
+      expect(points, hasLength(2));
+      expect(points?[0].target, ArRaycastTarget.existingPlaneGeometry);
+      expect(points?[0].tracking, ArTrackingSnapshot.normal);
+      expect(points?[0].sessionAgeMs, 4210);
+      expect(points?[0].cameraDistanceMm, 612.5);
+      expect(points?[0].rayAngleDeg, 63.25);
+      expect(points?[0].planeAlignment, ArPlaneAlignment.horizontal);
+      expect(points?[0].planeWidthMm, 1200.0);
+      expect(points?[0].planeHeightMm, 800.0);
+      // Điểm thứ hai KHÁC điểm đầu ở đúng tầng trúng. Hai điểm giống hệt nhau
+      // thì ca kiểm không phân biệt được "đọc đúng thứ tự" với "đọc điểm đầu
+      // hai lần".
+      expect(points?[1].target, ArRaycastTarget.estimatedPlane);
+    });
+
+    test('mới một điểm thì chẩn đoán cũng chỉ có một', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+    });
+
+    // Bản Swift cũ hơn tầng chẩn đoán không gửi khoá này. `null` chứ không
+    // phải một đối tượng rỗng: rỗng đọc ra "đã đo và không có gì", còn `null`
+    // đọc đúng nghĩa "bản nền này không nói".
+    test('thiếu khoá thì diagnostics về null, mẫu vẫn sống', () {
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+      });
+
+      expect(s?.status, ArMeasureStatus.measured);
+      expect(s?.measurement?.mm, 812);
+      expect(s?.diagnostics, isNull);
+    });
+
+    test('danh sách rỗng cũng về null, không phải một danh sách rỗng', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {'points': <Object?>[]},
+      });
+
+      expect(s?.diagnostics, isNull);
+    });
+
+    test('mặt ước lượng: không có mặt phẳng nào, ba khoá mp về null', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [
+            {
+              'target': 'estimatedPlane',
+              'tracking': 'limitedInsufficientFeatures',
+              'sessionAgeMs': 900,
+              'cameraDistanceMm': 310.0,
+              'rayAngleDeg': 12.0,
+            },
+          ],
+        },
+      });
+
+      final p = s?.diagnostics?.points.single;
+      expect(p?.target, ArRaycastTarget.estimatedPlane);
+      expect(p?.tracking, ArTrackingSnapshot.limitedInsufficientFeatures);
+      expect(p?.planeAlignment, isNull);
+      expect(p?.planeWidthMm, isNull);
+      expect(p?.planeHeightMm, isNull);
+    });
+
+    // Sáu nhánh bám tách nhau ra vì mỗi nhánh là một giả thuyết KHÁC về vì sao
+    // một số đo lệch. Gộp cả năm nhánh `.limited` thành một chữ "limited" là
+    // xoá đúng phần phân biệt được chúng.
+    test('sáu nhánh trạng thái bám đọc ra sáu giá trị khác nhau', () {
+      ArTrackingSnapshot? doc(String raw) => ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'points': [
+            {'tracking': raw},
+          ],
+        },
+      })?.diagnostics?.points.single.tracking;
+
+      expect(doc('normal'), ArTrackingSnapshot.normal);
+      expect(
+        doc('limitedInitializing'),
+        ArTrackingSnapshot.limitedInitializing,
+      );
+      expect(
+        doc('limitedExcessiveMotion'),
+        ArTrackingSnapshot.limitedExcessiveMotion,
+      );
+      expect(
+        doc('limitedInsufficientFeatures'),
+        ArTrackingSnapshot.limitedInsufficientFeatures,
+      );
+      expect(
+        doc('limitedRelocalizing'),
+        ArTrackingSnapshot.limitedRelocalizing,
+      );
+      expect(doc('notAvailable'), ArTrackingSnapshot.notAvailable);
+    });
+
+    test('chuỗi lạ ở target/tracking/planeAlignment về null, không ném', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'measured',
+          'mm': 812.0,
+          'tolMm': 12.0,
+          'diagnostics': {
+            'points': [
+              {
+                'target': 'vệ tinh',
+                'tracking': 'vệ tinh',
+                'planeAlignment': 'vệ tinh',
+              },
+            ],
+          },
+        });
+      }, returnsNormally);
+
+      final p = s?.diagnostics?.points.single;
+      expect(s?.measurement?.mm, 812, reason: 'khoá lạ không được giết số đo');
+      expect(p?.target, isNull);
+      expect(p?.tracking, isNull);
+      expect(p?.planeAlignment, isNull);
+    });
+
+    test('số sai kiểu (chuỗi) về null, không ném', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'points': [
+              {
+                'sessionAgeMs': 'not-a-number',
+                'cameraDistanceMm': 'not-a-number',
+                'rayAngleDeg': 'not-a-number',
+                'planeWidthMm': 'not-a-number',
+                'planeHeightMm': 'not-a-number',
+              },
+            ],
+          },
+        });
+      }, returnsNormally);
+
+      final p = s?.diagnostics?.points.single;
+      expect(p?.sessionAgeMs, isNull);
+      expect(p?.cameraDistanceMm, isNull);
+      expect(p?.rayAngleDeg, isNull);
+      expect(p?.planeWidthMm, isNull);
+      expect(p?.planeHeightMm, isNull);
+    });
+
+    test('diagnostics sai kiểu (không phải map) về null, mẫu vẫn sống', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'measured',
+          'mm': 400.0,
+          'tolMm': 6.0,
+          'diagnostics': 'not-a-map',
+        });
+      }, returnsNormally);
+
+      expect(s?.status, ArMeasureStatus.measured);
+      expect(s?.measurement?.mm, 400);
+      expect(s?.diagnostics, isNull);
+    });
+
+    test('points sai kiểu (không phải danh sách) về null, mẫu vẫn sống', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'measured',
+          'mm': 400.0,
+          'tolMm': 6.0,
+          'diagnostics': {'points': 'not-a-list'},
+        });
+      }, returnsNormally);
+
+      expect(s?.measurement?.mm, 400);
+      expect(s?.diagnostics, isNull);
+    });
+
+    // Một phần tử hỏng KHÔNG được rơi ra khỏi danh sách: rơi ra là điểm thứ
+    // hai trượt lên chỗ điểm thứ nhất, và cả dải chẩn đoán nói dối về việc
+    // điểm nào được chấm trong điều kiện nào — im lặng, không lỗi nào nổ.
+    test('phần tử hỏng giữ NGUYÊN CHỖ, thành một điểm trống', () {
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 400.0,
+        'tolMm': 6.0,
+        'diagnostics': {
+          'points': ['not-a-map', diemDay(target: 'estimatedPlane')],
+        },
+      });
+
+      final points = s?.diagnostics?.points;
+      expect(points, hasLength(2));
+      expect(points?[0].target, isNull);
+      expect(points?[0].tracking, isNull);
+      expect(
+        points?[1].target,
+        ArRaycastTarget.estimatedPlane,
+        reason:
+            'điểm thứ hai phải còn ở CHỖ THỨ HAI, không được trượt lên chỗ đầu',
+      );
+    });
+  });
+
   group('isAvailable', () {
     // Thiếu plugin (chạy trên máy không phải iOS, hoặc gói chưa đăng ký) phải trả
     // false chứ KHÔNG ném: app gọi hàm này để quyết định ẩn hay hiện một nút.

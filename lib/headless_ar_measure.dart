@@ -82,7 +82,112 @@ class ArMeasurement {
   final double tolMm;
 
   /// Điểm cuối có hít vào một cạnh do ARKit dò ra hay không.
+  ///
+  /// **CHƯA ĐƯỢC TÍNH.** Tầng Swift gán cứng `false` cho mọi mẫu — hít cạnh
+  /// nằm sau một cờ tắt cho tới khi đo được tỉ lệ trúng trên máy thật. Trường
+  /// tồn tại để khuôn dây không đổi lúc nó vào.
+  ///
+  /// Đừng đọc nó như dữ liệu, và nhất là đừng đọc nó như "điểm này KHÔNG nằm
+  /// trên cạnh nào" — đó là một khẳng định mà chưa có phép tính nào đứng sau.
+  /// Thứ nói được điều kiện thật của mỗi điểm là [ArMeasureSample.diagnostics].
   final bool snappedToEdge;
+}
+
+/// Tầng mục tiêu mà tia ĐÃ trúng — của ARKit, không phải của gói.
+///
+/// [existingPlaneGeometry] là điểm nằm trên một mặt phẳng ARKit **đã xác
+/// nhận**; [estimatedPlane] là một mặt phẳng ARKit **đoán ra** từ hình học
+/// quanh tia (trên máy LiDAR thì đó là lưới thật, nên cùng một giá trị mang hai
+/// mức tin cậy rất khác nhau — [ArPointDiagnostics.planeAlignment] tách hai
+/// chuyện ấy ra).
+///
+/// [existingPlaneInfinite] không nằm trong danh sách gói bắn ra, nhưng vẫn có
+/// mặt ở đây vì giá trị này là của `ARRaycastQuery.Target`.
+enum ArRaycastTarget {
+  existingPlaneGeometry,
+  existingPlaneInfinite,
+  estimatedPlane,
+}
+
+/// Trạng thái bám của ARKit tại đúng khoảnh khắc một điểm được chấm.
+///
+/// Sáu nhánh, KHÔNG gộp năm nhánh `.limited` thành một chữ: mỗi nhánh là một
+/// giả thuyết khác về vì sao một số đo lệch. [limitedInitializing] nói "máy
+/// chưa ấm", [limitedExcessiveMotion] nói "tay đang rê",
+/// [limitedRelocalizing] nói "hệ toạ độ vừa nối lại".
+///
+/// Khác [ArMeasureLimitedReason]: cái kia là thứ NGƯỜI DÙNG đọc (hai lý do,
+/// hai lời khuyên ngược nhau), cái này là thứ NGƯỜI ĐIỀU TRA đọc.
+enum ArTrackingSnapshot {
+  normal,
+  limitedInitializing,
+  limitedExcessiveMotion,
+  limitedInsufficientFeatures,
+  limitedRelocalizing,
+  notAvailable,
+}
+
+/// Phương của mặt phẳng mà một điểm rơi lên.
+enum ArPlaneAlignment { horizontal, vertical }
+
+/// Điều kiện MỘT điểm được chấm — ảnh chụp tại đúng khoảnh khắc cú bấm.
+///
+/// Không trường nào ở đây tham gia vào phép tính khoảng cách. Đây là tầng GHI:
+/// nó nói lại thứ máy ĐÃ làm, không đổi thứ máy sẽ làm.
+///
+/// **Mọi trường đều có thể `null`**, và đó là chủ ý. Thiếu khung hình camera,
+/// một bản Swift cũ hơn tầng này, hay một giá trị ARKit thêm ở bản iOS sau —
+/// tất cả rơi về `null`. Bịa một giá trị mặc định là dựng ra bằng chứng giả cho
+/// đúng cái lượt điều tra mà tầng này sinh ra để phục vụ.
+class ArPointDiagnostics {
+  const ArPointDiagnostics({
+    this.target,
+    this.tracking,
+    this.sessionAgeMs,
+    this.cameraDistanceMm,
+    this.rayAngleDeg,
+    this.planeAlignment,
+    this.planeWidthMm,
+    this.planeHeightMm,
+  });
+
+  final ArRaycastTarget? target;
+  final ArTrackingSnapshot? tracking;
+
+  /// Mili-giây kể từ lời gọi `run(...)` gần nhất của phiên ARKit.
+  ///
+  /// Neo vào `run` chứ không vào lúc mở màn: `reset()` dựng lại hệ toạ độ từ
+  /// đầu và mốc này đếm lại từ đó. Đây là biến duy nhất phân biệt được giả
+  /// thuyết "máy chưa ấm".
+  final int? sessionAgeMs;
+
+  /// Khoảng cách từ tâm camera tới điểm chấm, milimét.
+  final double? cameraDistanceMm;
+
+  /// Góc của tia so với MẶT PHẲNG trúng, độ.
+  ///
+  /// 90° là chĩa vuông góc vào mặt, 0° là tia lướt sát mặt. Không phải góc so
+  /// với pháp tuyến — hai góc ấy bù nhau, và cả hai đều nằm trong 0–90.
+  final double? rayAngleDeg;
+
+  /// `null` khi tia trúng một mặt ƯỚC LƯỢNG: không có mặt phẳng nào cả.
+  final ArPlaneAlignment? planeAlignment;
+
+  /// Bề rộng/bề dài của mặt phẳng trúng, milimét. `null` khi không có mặt
+  /// phẳng nào — cùng lối với [planeAlignment].
+  final double? planeWidthMm;
+  final double? planeHeightMm;
+}
+
+/// Chẩn đoán của cả phép đo: mỗi điểm một mục, theo ĐÚNG thứ tự chấm.
+///
+/// [points] có một mục khi mới chấm điểm đầu, hai mục khi đã đủ hai. Không bao
+/// giờ rỗng — mẫu không có điểm nào thì [ArMeasureSample.diagnostics] là `null`
+/// chứ không phải một danh sách rỗng.
+class ArMeasureDiagnostics {
+  const ArMeasureDiagnostics({required this.points});
+
+  final List<ArPointDiagnostics> points;
 }
 
 /// Máy này chạy được ARKit tới đâu.
@@ -107,6 +212,7 @@ class ArMeasureSample {
     this.limitedReason,
     this.recoverable = true,
     this.aimLocked = false,
+    this.diagnostics,
   });
 
   final ArMeasureStatus status;
@@ -152,6 +258,19 @@ class ArMeasureSample {
   /// Mặc định `false`: thiếu khoá nghĩa là chưa bám, tức là hình tâm ngắm an
   /// toàn (rỗng, còn phải rê tiếp).
   final bool aimLocked;
+
+  /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
+  ///
+  /// `null` ở mọi mẫu chưa có điểm nào, và cũng `null` khi tầng nền không nói
+  /// được (một bản Swift cũ hơn tầng chẩn đoán). Không bao giờ là một danh sách
+  /// rỗng: rỗng đọc ra "đã đo và không có gì", còn `null` đọc đúng nghĩa "bản
+  /// nền này không nói".
+  ///
+  /// Không thứ gì trong đây tham gia vào phép tính khoảng cách. Nó tồn tại vì
+  /// một lượt điều tra đã bác sạch mọi giả thuyết về sai lệch số đo, và bác vì
+  /// cùng một lý do ở MỌI giả thuyết: mẫu bắn lên Dart không mang một mẩu nào
+  /// về việc phép đo đã diễn ra thế nào, nên mọi lời giải đều khớp mọi số đo.
+  final ArMeasureDiagnostics? diagnostics;
 }
 
 /// Cửa vào duy nhất tới phiên đo AR.
@@ -279,6 +398,72 @@ class ArMeasure {
       limitedReason: limitedReason,
       recoverable: recoverable,
       aimLocked: aimLocked,
+      diagnostics: _parseDiagnostics(raw['diagnostics']),
+    );
+  }
+
+  /// Đọc khối chẩn đoán. **Không bao giờ ném, và không bao giờ giết mẫu.**
+  ///
+  /// Chẩn đoán là thứ đi kèm: một khoá hỏng ở đây mà làm mất cả mẫu thì tầng
+  /// chẩn đoán tự nó thành một lỗi sản phẩm — màn đo đứng im ở khung hình cuối
+  /// vì một trường không ai nhìn.
+  static ArMeasureDiagnostics? _parseDiagnostics(Object? raw) {
+    if (raw is! Map) return null;
+    final rawPoints = raw['points'];
+    if (rawPoints is! List) return null;
+    if (rawPoints.isEmpty) return null;
+
+    // Phần tử hỏng thành một điểm TRỐNG, không bị loại khỏi danh sách. Loại nó
+    // ra là điểm thứ hai trượt lên chỗ điểm thứ nhất, và cả dải chẩn đoán nói
+    // dối về việc điểm nào được chấm trong điều kiện nào — im lặng, và người
+    // đọc không có cách nào biết.
+    return ArMeasureDiagnostics(
+      points: rawPoints
+          .map(
+            (Object? p) => p is Map
+                ? _parsePointDiagnostics(Map<Object?, Object?>.from(p))
+                : const ArPointDiagnostics(),
+          )
+          .toList(growable: false),
+    );
+  }
+
+  /// Đọc một điểm. Mọi trường sai kiểu hay lạ đều về `null`, y như
+  /// [parseSample] làm với `mm`/`tolMm`.
+  static ArPointDiagnostics _parsePointDiagnostics(Map<Object?, Object?> raw) {
+    final rawAge = raw['sessionAgeMs'];
+    final rawDistance = raw['cameraDistanceMm'];
+    final rawAngle = raw['rayAngleDeg'];
+    final rawWidth = raw['planeWidthMm'];
+    final rawHeight = raw['planeHeightMm'];
+
+    return ArPointDiagnostics(
+      target: switch (raw['target']) {
+        'existingPlaneGeometry' => ArRaycastTarget.existingPlaneGeometry,
+        'existingPlaneInfinite' => ArRaycastTarget.existingPlaneInfinite,
+        'estimatedPlane' => ArRaycastTarget.estimatedPlane,
+        _ => null,
+      },
+      tracking: switch (raw['tracking']) {
+        'normal' => ArTrackingSnapshot.normal,
+        'limitedInitializing' => ArTrackingSnapshot.limitedInitializing,
+        'limitedExcessiveMotion' => ArTrackingSnapshot.limitedExcessiveMotion,
+        'limitedInsufficientFeatures' =>
+          ArTrackingSnapshot.limitedInsufficientFeatures,
+        'limitedRelocalizing' => ArTrackingSnapshot.limitedRelocalizing,
+        'notAvailable' => ArTrackingSnapshot.notAvailable,
+        _ => null,
+      },
+      sessionAgeMs: rawAge is num ? rawAge.round() : null,
+      cameraDistanceMm: rawDistance is num ? rawDistance.toDouble() : null,
+      rayAngleDeg: rawAngle is num ? rawAngle.toDouble() : null,
+      planeAlignment: switch (raw['planeAlignment']) {
+        'horizontal' => ArPlaneAlignment.horizontal,
+        'vertical' => ArPlaneAlignment.vertical,
+        _ => null,
+      },
+      planeWidthMm: rawWidth is num ? rawWidth.toDouble() : null,
+      planeHeightMm: rawHeight is num ? rawHeight.toDouble() : null,
     );
   }
 }

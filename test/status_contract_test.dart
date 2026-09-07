@@ -51,6 +51,43 @@ void main() {
           'quả chấm điểm rơi về notReady, kể cả lúc điểm đã đặt xong',
     );
   });
+
+  // Ba enum của tầng chẩn đoán đi qua đúng cái ranh giới ấy, và hỏng theo cùng
+  // một kiểu câm: một chuỗi lệch bị `parseSample` bỏ về `null`, dải chẩn đoán
+  // in ra "?" ở đúng ô mà nó có dữ liệu, và không lỗi nào nổ. Tệ hơn nữa vì
+  // chẩn đoán tồn tại để CHỨNG MINH một giả thuyết — một trường câm ở đây làm
+  // hỏng đúng lượt điều tra mà nó sinh ra để phục vụ.
+
+  test('ba chuỗi tầng mục tiêu của tia khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArRaycastTarget'),
+      ArRaycastTarget.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArRaycastTarget bên Swift và bên Dart đã lệch — tầng trúng của '
+          'mỗi điểm đọc ra null, đúng thứ phân biệt "mặt phẳng đã xác nhận" với '
+          '"mặt phẳng đoán ra"',
+    );
+  });
+
+  test('sáu chuỗi trạng thái bám khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArTrackingSnapshot'),
+      ArTrackingSnapshot.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArTrackingSnapshot bên Swift và bên Dart đã lệch — trạng thái '
+          'bám lúc bấm đọc ra null, và giả thuyết "máy chưa ấm" mất chỗ dựa',
+    );
+  });
+
+  test('hai chuỗi phương của mặt phẳng khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArPlaneAlignment'),
+      ArPlaneAlignment.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArPlaneAlignment bên Swift và bên Dart đã lệch — mặt phẳng trúng '
+          'đọc ra "không có mặt phẳng", đúng cái nhầm mà chẩn đoán đi phân biệt',
+    );
+  });
 }
 
 /// Trích tên các `case` của một `enum <tên>: String` trong mã Swift.

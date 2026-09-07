@@ -1,5 +1,42 @@
 ## Unreleased
 
+A tile edge measured 382mm against a true 400 (−4.5%); two tiles measured 795
+against 800 (−0.6%). Sixteen agents went looking for the cause and came back
+with nothing — every hypothesis fitted both numbers, because the sample the
+package pushes to Dart carried not one bit about *how* the measurement had
+happened. This release does not touch the measurement. It records what the
+machine did.
+
+* **`ArMeasureSample.diagnostics`** — an `ArMeasureDiagnostics` carrying one
+  `ArPointDiagnostics` per placed point, in the order they were placed: one
+  entry after the first tap, two once both are down. `null` when no point has
+  been placed, and `null` on older native builds. Never an empty list: empty
+  reads as "measured, and there was nothing", `null` reads as "this build does
+  not say".
+* Per point: which raycast target actually hit (`existingPlaneGeometry` vs
+  `estimatedPlane` — read straight off `ARRaycastResult.target`, not inferred
+  from the query order), the raw ARKit tracking state at the moment of the tap
+  (six values; the five `.limited` reasons are *not* collapsed into one word,
+  because each is a different explanation for the same wrong number), the
+  session age in milliseconds since the last `run(...)`, the camera-to-point
+  distance in mm, the ray's angle to the surface in degrees, and — when the hit
+  landed on a real `ARPlaneAnchor` — that plane's alignment and extent in mm.
+* Every field is nullable, deliberately. No camera frame, an `@unknown` value
+  from a later iOS, an older native build: all of it comes back `null`. Inventing
+  a default here would be manufacturing evidence for the very investigation the
+  layer exists to serve.
+* A malformed entry on the wire becomes an *empty* point rather than being
+  dropped, so point two can never slide into point one's slot. A malformed
+  block, or one that is not a map at all, drops the diagnostics and keeps the
+  sample: a side channel that can kill the measurement stream is a product bug,
+  not a diagnostic.
+* **`ArMeasurement.snappedToEdge` is still a hard-coded `false`** and is now
+  documented as such at every level. It is not computed anywhere in this
+  package. Sitting next to a block of real measured numbers, a bare `false`
+  reads exactly like a computation that ran and returned false.
+
+## Earlier in Unreleased — second device run
+
 Second run on real hardware (iPhone 16 Plus): the camera works, the coaching
 overlay samples the room, the session reports `ready` — and the Place button
 does nothing. Aimed at a glossy black tablet screen at close range, the raycast
@@ -45,7 +82,7 @@ was missing every time, correctly, with nothing on screen saying so.
   distant wall it returns somewhere along an extended floor. A number that
   looks ordinary and is wrong is this package's worst failure mode.
 
-## Earlier in Unreleased
+## Earlier in Unreleased — first device run
 
 First run on real hardware (iPhone 16 Plus), and four things it turned up.
 

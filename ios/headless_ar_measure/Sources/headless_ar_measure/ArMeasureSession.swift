@@ -62,6 +62,106 @@ enum ArMeasurePlaceResult: String {
   case alreadyComplete
 }
 
+// MARK: - Chẩn đoán
+
+/// Tầng mục tiêu mà tia ĐÃ trúng — đọc thẳng từ `ARRaycastResult.target`.
+///
+/// Ba giá trị đúng bằng `ARRaycastQuery.Target`. `.existingPlaneGeometry` là
+/// điểm nằm trên một mặt phẳng ARKit đã xác nhận; `.estimatedPlane` là một mặt
+/// phẳng ARKit ĐOÁN ra từ hình học quanh tia (trên máy LiDAR thì đó là lưới
+/// thật, nên cùng một chữ mang hai mức tin cậy rất khác nhau — vì thế
+/// [ArPointDiagnostics] còn chở kèm mặt phẳng trúng).
+/// `.existingPlaneInfinite` KHÔNG nằm trong danh sách gói bắn ra
+/// ([ArMeasureSession.raycastFromReticle] cố ý không dùng), nhưng vẫn có mặt ở
+/// đây vì `target` là của ARKit chứ không phải của gói.
+///
+/// `rawValue` **LÀ** hợp đồng, y như `ArMeasureStatus` — và
+/// `test/status_contract_test.dart` canh cả ba.
+enum ArRaycastTarget: String {
+  case existingPlaneGeometry
+  case existingPlaneInfinite
+  case estimatedPlane
+}
+
+/// Trạng thái bám của ARKit tại đúng khoảnh khắc một điểm được chấm.
+///
+/// Sáu nhánh, KHÔNG gộp năm nhánh `.limited` lại thành một chữ "limited": mỗi
+/// nhánh là một giả thuyết khác về vì sao một số đo lệch, và gộp là xoá đúng
+/// phần phân biệt được chúng. `.limited(.initializing)` nói "máy chưa ấm",
+/// `.limited(.excessiveMotion)` nói "tay đang rê", `.limited(.relocalizing)`
+/// nói "hệ toạ độ vừa nối lại" — ba lời giải khác hẳn nhau cho cùng một con số
+/// lệch.
+///
+/// Khác `ArMeasureLimitedReason` ở chỗ: cái kia là thứ NGƯỜI DÙNG đọc (hai lý
+/// do có hai lời khuyên), cái này là thứ NGƯỜI ĐIỀU TRA đọc.
+///
+/// `rawValue` **LÀ** hợp đồng — `test/status_contract_test.dart` canh cả sáu.
+enum ArTrackingSnapshot: String {
+  case normal
+  case limitedInitializing
+  case limitedExcessiveMotion
+  case limitedInsufficientFeatures
+  case limitedRelocalizing
+  case notAvailable
+}
+
+/// Phương của mặt phẳng mà điểm rơi lên. Đúng bằng `ARPlaneAnchor.Alignment`.
+///
+/// `rawValue` **LÀ** hợp đồng — `test/status_contract_test.dart` canh cả hai.
+enum ArPlaneAlignment: String {
+  case horizontal
+  case vertical
+}
+
+/// Điều kiện MỘT điểm được chấm — ảnh chụp tại đúng khoảnh khắc cú bấm.
+///
+/// Vì sao lớp này tồn tại: một lượt điều tra dài đã bác sạch mọi giả thuyết về
+/// sai lệch số đo, và bác vì cùng một lý do ở MỌI giả thuyết — mẫu bắn lên Dart
+/// không mang một mẩu nào về việc phép đo đã diễn ra thế nào. Mọi lời giải khớp
+/// mọi số đo, nên không lời giải nào kiểm được.
+///
+/// Không cái nào ở đây tham gia vào phép tính khoảng cách. Đây là tầng GHI, và
+/// nó không được đụng vào thuật toán đo.
+///
+/// Mọi trường đều tuỳ chọn, và đó là chủ ý: thiếu một khung hình camera, hoặc
+/// ARKit trả một giá trị `@unknown`, thì khoá ấy vắng mặt trên dây và Dart đọc
+/// ra `null`. Bịa một giá trị mặc định ở đây là dựng ra bằng chứng giả cho đúng
+/// cái lượt điều tra mà tầng này sinh ra để phục vụ.
+struct ArPointDiagnostics {
+  let target: ArRaycastTarget?
+  let tracking: ArTrackingSnapshot?
+
+  /// Mili-giây kể từ lời gọi `session.run(...)` gần nhất. Biến duy nhất phân
+  /// biệt được giả thuyết "máy chưa ấm".
+  let sessionAgeMs: Int?
+
+  /// Khoảng cách từ tâm camera tới điểm chấm, mm.
+  let cameraDistanceMm: Double?
+
+  /// Góc của tia so với MẶT PHẲNG trúng, độ. 90° là chĩa vuông góc vào mặt,
+  /// 0° là tia lướt sát mặt.
+  let rayAngleDeg: Double?
+
+  /// `nil` khi tia trúng một mặt ƯỚC LƯỢNG — không có `ARPlaneAnchor` nào.
+  let planeAlignment: ArPlaneAlignment?
+  let planeWidthMm: Double?
+  let planeHeightMm: Double?
+
+  /// Map đã sẵn sàng cho kênh. Khoá vắng mặt = tầng nền không nói được.
+  var payload: [String: Any] {
+    var map: [String: Any] = [:]
+    if let target { map["target"] = target.rawValue }
+    if let tracking { map["tracking"] = tracking.rawValue }
+    if let sessionAgeMs { map["sessionAgeMs"] = sessionAgeMs }
+    if let cameraDistanceMm { map["cameraDistanceMm"] = cameraDistanceMm }
+    if let rayAngleDeg { map["rayAngleDeg"] = rayAngleDeg }
+    if let planeAlignment { map["planeAlignment"] = planeAlignment.rawValue }
+    if let planeWidthMm { map["planeWidthMm"] = planeWidthMm }
+    if let planeHeightMm { map["planeHeightMm"] = planeHeightMm }
+    return map
+  }
+}
+
 /// Đường ra của một phiên: một map đã sẵn sàng cho `EventChannel`.
 ///
 /// Là protocol chứ không phải closure để phía nhận giữ được **yếu**. Một
@@ -341,6 +441,26 @@ final class ArMeasureSession: NSObject {
   /// Hai điểm đã chấm, theo thứ tự chấm. Nhiều nhất hai.
   private var anchors: [ARAnchor] = []
 
+  /// Điều kiện lúc chấm, khoá theo `identifier` của anchor.
+  ///
+  /// Khoá theo id chứ KHÔNG theo chỉ số của [anchors], vì chỉ số không sống nổi
+  /// qua hai đường đã có sẵn trong lớp này: [adoptUpdatedAnchors] thay ĐỐI
+  /// TƯỢNG anchor mỗi lượt ARKit chỉnh hệ toạ độ (id giữ nguyên), và
+  /// `didRemove` bỏ một anchor ở giữa. Cả hai làm lệch một ánh xạ theo chỉ số
+  /// mà không có lỗi nào nổ — chẩn đoán của điểm 1 gắn sang điểm 2, và số in ra
+  /// vẫn trông hợp lý.
+  ///
+  /// Map thì KHÔNG có thứ tự, nên thứ tự trong mẫu luôn đọc từ [anchors] —
+  /// xem [publish].
+  private var pointDiagnostics: [UUID: ArPointDiagnostics] = [:]
+
+  /// Mốc thời gian của lời gọi `session.run(...)` gần nhất. `nil` là chưa chạy.
+  ///
+  /// Neo vào `run` chứ không vào `init`: `reset()` và lượt bỏ cuộc nối lại vị
+  /// trí đều dựng lại hệ toạ độ từ đầu, và tuổi phiên phải đếm lại từ đó thì
+  /// mới nói được gì về "máy chưa ấm".
+  private var sessionStartedAt: TimeInterval?
+
   /// Trạng thái bám gần nhất ARKit báo. `nil` là chưa có callback nào.
   private var trackingState: ARCamera.TrackingState?
 
@@ -612,6 +732,9 @@ final class ArMeasureSession: NSObject {
     failure = nil
     failureIsRecoverable = true
     sceneView.session.run(makeConfiguration(), options: options)
+    // Mốc tuổi phiên đặt ngay tại đây, cùng lượt với `run`. Xem
+    // [sessionStartedAt] vì sao không đặt ở `init`.
+    sessionStartedAt = CACurrentMediaTime()
     publish(force: true)
   }
 
@@ -643,7 +766,8 @@ final class ArMeasureSession: NSObject {
 
     let status = currentStatus()
     guard status == .ready || status == .firstPointPlaced else { return .notReady }
-    guard let transform = raycastFromReticle() else { return .missed }
+    guard let hit = raycastFromReticle() else { return .missed }
+    let transform = hit.worldTransform
 
     // `ARAnchor` chứ không phải `simd_float3` thuần — nhưng KHÔNG phải vì
     // anchor tự đi theo lượt tinh chỉnh. Nó không hứa thế: `transform` là
@@ -658,6 +782,9 @@ final class ArMeasureSession: NSObject {
     // thấy, và nếu nó không trao gì thì cũng không có gì đứng im chờ mãi.
     let anchor = ARAnchor(name: "headless_ar_measure.point", transform: transform)
     anchors.append(anchor)
+    // Ghi điều kiện NGAY tại cú bấm, không dựng lại sau. `hit` chỉ sống trong
+    // lời gọi này, và trạng thái bám thì đổi trước khi mẫu kế tiếp bắn đi.
+    pointDiagnostics[anchor.identifier] = makeDiagnostics(for: hit)
     sceneView.session.add(anchor: anchor)
 
     publish(force: true)
@@ -671,6 +798,7 @@ final class ArMeasureSession: NSObject {
   /// chuyện app tự chặn được, còn "raycast trượt" thì không.
   func undoPoint() {
     guard !isStopped, let last = anchors.popLast() else { return }
+    pointDiagnostics.removeValue(forKey: last.identifier)
     sceneView.session.remove(anchor: last)
     publish(force: true)
   }
@@ -737,7 +865,13 @@ final class ArMeasureSession: NSObject {
   /// Trượt thì rơi về `.estimatedPlane`, chỗ ARKit đoán một mặt phẳng từ hình
   /// học quanh tia. Trên máy LiDAR tầng thứ hai cắt vào lưới thật, nên nó chắc
   /// hơn hẳn — cùng một dòng mã, khác nhau ở dưới.
-  private func raycastFromReticle() -> simd_float4x4? {
+  ///
+  /// Trả về CẢ `ARRaycastResult` chứ không phải mỗi `worldTransform`: kết quả
+  /// còn chở `target` (tầng nào đã trúng) và `anchor` (mặt phẳng nào, nếu có),
+  /// và đây là chỗ DUY NHẤT hai thứ ấy tồn tại. Vứt chúng ở đây thì tầng chẩn
+  /// đoán mất đúng hai trường phân biệt "mặt phẳng ARKit đã xác nhận" với "mặt
+  /// phẳng nó đoán ra" — mà không lỗi nào nổ, vì mọi thứ còn lại vẫn chạy.
+  private func raycastFromReticle() -> ARRaycastResult? {
     let bounds = sceneView.bounds
     guard bounds.width > 0, bounds.height > 0 else { return nil }
     let reticle = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -747,10 +881,124 @@ final class ArMeasureSession: NSObject {
       guard let query = sceneView.raycastQuery(from: reticle, allowing: target, alignment: .any)
       else { continue }
       if let hit = sceneView.session.raycast(query).first {
-        return hit.worldTransform
+        return hit
       }
     }
     return nil
+  }
+
+  // MARK: - Ghi lại điều kiện lúc chấm
+
+  /// Ảnh chụp điều kiện của MỘT cú chấm. Xem [ArPointDiagnostics].
+  ///
+  /// Chạy đúng một lần cho mỗi điểm, ngay sau khi tia trúng — không phải mỗi
+  /// khung hình. Không có gì trong đây quay lại đụng vào phép đo.
+  private func makeDiagnostics(for hit: ARRaycastResult) -> ArPointDiagnostics {
+    // Tầng trúng đọc THẲNG từ kết quả. Suy từ thứ tự vòng lặp ở
+    // [raycastFromReticle] là chép lại một sự thật ARKit đã nói ra sẵn, và bản
+    // chép rời khỏi bản gốc ngay lượt đầu ai đó đổi danh sách tầng mục tiêu.
+    let target: ArRaycastTarget?
+    switch hit.target {
+    case .existingPlaneGeometry: target = .existingPlaneGeometry
+    case .existingPlaneInfinite: target = .existingPlaneInfinite
+    case .estimatedPlane: target = .estimatedPlane
+    @unknown default: target = nil
+    }
+
+    let hitColumn = hit.worldTransform.columns.3
+    let hitPosition = SIMD3<Float>(hitColumn.x, hitColumn.y, hitColumn.z)
+
+    var cameraDistanceMm: Double?
+    var rayAngleDeg: Double?
+    // Đọc khung hình hiện tại rồi THẢ ngay: giữ một `ARFrame` là chặn ARKit
+    // giao khung mới. `ARCamera` lấy ra không giữ khung.
+    if let camera = sceneView.session.currentFrame?.camera {
+      let camColumn = camera.transform.columns.3
+      let cameraPosition = SIMD3<Float>(camColumn.x, camColumn.y, camColumn.z)
+      let toHit = hitPosition - cameraPosition
+      let distance = simd_length(toHit)
+      if distance.isFinite {
+        cameraDistanceMm = Double(distance) * 1000
+      }
+      if distance > 0 {
+        // Trục Y của transform mà raycast trả về LÀ pháp tuyến bề mặt (hợp
+        // đồng của `ARRaycastResult`).
+        let n = hit.worldTransform.columns.1
+        let normal = simd_normalize(SIMD3<Float>(n.x, n.y, n.z))
+        let direction = toHit / distance
+        // `asin` chứ không `acos`: `dot` cho góc so với PHÁP TUYẾN, mà thứ đọc
+        // được bằng mắt là góc so với MẶT PHẲNG. Hai góc bù nhau, nên nhầm ở
+        // đây in 63° ra thành 27° — một con số vẫn hợp lệ, vẫn nằm trong 0–90,
+        // và không có gì trên màn nói ra là mình đang đọc nhầm cái nào.
+        let cosToNormal = min(1, max(0, abs(simd_dot(direction, normal))))
+        let radians = asin(cosToNormal)
+        if radians.isFinite {
+          rayAngleDeg = Double(radians) * 180 / .pi
+        }
+      }
+    }
+
+    var planeAlignment: ArPlaneAlignment?
+    var planeWidthMm: Double?
+    var planeHeightMm: Double?
+    // Không có `ARPlaneAnchor` nghĩa là tia trúng một mặt ƯỚC LƯỢNG. Ba khoá
+    // dưới đây vắng mặt trên dây, và Dart đọc ra "không có mặt phẳng".
+    if let plane = hit.anchor as? ARPlaneAnchor {
+      switch plane.alignment {
+      case .horizontal: planeAlignment = .horizontal
+      case .vertical: planeAlignment = .vertical
+      @unknown default: planeAlignment = nil
+      }
+      if #available(iOS 16.0, *) {
+        planeWidthMm = Double(plane.planeExtent.width) * 1000
+        planeHeightMm = Double(plane.planeExtent.height) * 1000
+      } else {
+        // `extent` đã bị Apple đánh dấu lỗi thời từ iOS 16 (cảnh báo lúc dịch
+        // là có chủ đích, không phải sót). Deployment target của gói là iOS
+        // 13, nên đây là đường DUY NHẤT còn lại cho iOS 13–15.
+        planeWidthMm = Double(plane.extent.x) * 1000
+        planeHeightMm = Double(plane.extent.z) * 1000
+      }
+    }
+
+    var sessionAgeMs: Int?
+    if let sessionStartedAt {
+      sessionAgeMs = Int((CACurrentMediaTime() - sessionStartedAt) * 1000)
+    }
+
+    return ArPointDiagnostics(
+      target: target,
+      tracking: currentTrackingSnapshot(),
+      sessionAgeMs: sessionAgeMs,
+      cameraDistanceMm: cameraDistanceMm,
+      rayAngleDeg: rayAngleDeg,
+      planeAlignment: planeAlignment,
+      planeWidthMm: planeWidthMm,
+      planeHeightMm: planeHeightMm
+    )
+  }
+
+  /// Trạng thái bám THÔ của ARKit, không nén qua tám trạng thái sản phẩm.
+  ///
+  /// [currentStatus] cố ý đổ `.excessiveMotion` và `.insufficientFeatures` vào
+  /// chung một `needsMotion`, và đổ `.relocalizing` sang `interrupted` — đúng
+  /// cho màn hình, sai cho một lượt điều tra. Ở đây giữ nguyên sáu nhánh.
+  private func currentTrackingSnapshot() -> ArTrackingSnapshot? {
+    guard let trackingState else { return nil }
+    switch trackingState {
+    case .normal:
+      return .normal
+    case .notAvailable:
+      return .notAvailable
+    case .limited(let reason):
+      switch reason {
+      case .initializing: return .limitedInitializing
+      case .excessiveMotion: return .limitedExcessiveMotion
+      case .insufficientFeatures: return .limitedInsufficientFeatures
+      case .relocalizing: return .limitedRelocalizing
+      @unknown default: return nil
+      }
+    }
   }
 
   // MARK: - Tâm ngắm
@@ -986,11 +1234,37 @@ final class ArMeasureSession: NSObject {
     if aimLocked {
       sample["aimLocked"] = true
     }
+    // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
+    // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
+    // hai điểm, mà điểm ĐẦU mới là chỗ giả thuyết "chấm sai điểm đầu" phải
+    // kiểm: người dùng chấm điểm một trên một mặt ước lượng lúc phiên còn
+    // `.limited(.initializing)` rồi mới rê máy sang điểm hai.
+    //
+    // Thứ tự đọc từ [anchors] — thứ tự CHẤM — chứ không từ `pointDiagnostics`:
+    // `Dictionary.values` không có thứ tự, và hai điểm đổi chỗ ngẫu nhiên giữa
+    // các lượt bắn thì cả dải chẩn đoán nói dối mà không lỗi nào nổ.
+    //
+    // Map rỗng cho một anchor không có chẩn đoán (đường này không tới được:
+    // `placePoint` ghi ngay lúc thêm anchor) — giữ CHỖ chứ không rút ngắn danh
+    // sách, vì rút ngắn là điểm hai trượt lên chỗ điểm một.
+    //
+    // Không cần đưa vào bộ nén ở trên: chẩn đoán chỉ đổi khi [anchors] đổi, và
+    // mọi đường đổi [anchors] đều `publish(force: true)`.
+    if !anchors.isEmpty {
+      sample["diagnostics"] = [
+        "points": anchors.map { pointDiagnostics[$0.identifier]?.payload ?? [:] }
+      ]
+    }
     if let mm {
       sample["mm"] = mm
       sample["tolMm"] = toleranceMm(forMm: mm)
-      // Hít cạnh chưa dựng (nó nằm sau một cờ tắt cho tới khi đo được tỉ lệ
-      // trúng trên máy thật). Trường vẫn gửi để khuôn dây không đổi lúc nó vào.
+      // ĐÂY LÀ HẰNG SỐ, KHÔNG PHẢI KẾT QUẢ ĐO: hít cạnh CHƯA ĐƯỢC TÍNH ở bất
+      // cứ đâu trong gói (nó nằm sau một cờ tắt cho tới khi đo được tỉ lệ trúng
+      // trên máy thật). Trường vẫn gửi để khuôn dây không đổi lúc nó vào.
+      //
+      // Nhắc thẳng ra vì ngay bên trên nó bây giờ là cả một tầng chẩn đoán toàn
+      // dữ liệu THẬT: một `false` nằm giữa những con số thật đọc y hệt một phép
+      // đo đã chạy và trả về false.
       sample["snappedToEdge"] = false
     }
 
@@ -1085,6 +1359,7 @@ final class ArMeasureSession: NSObject {
       sceneView.session.remove(anchor: anchor)
     }
     anchors.removeAll()
+    pointDiagnostics.removeAll()
     lastMm = nil
   }
 }
@@ -1221,6 +1496,7 @@ extension ArMeasureSession: ARSessionDelegate {
     let removed = Set(anchors.map(\.identifier))
     let before = self.anchors.count
     self.anchors.removeAll { removed.contains($0.identifier) }
+    for id in removed { pointDiagnostics.removeValue(forKey: id) }
     guard self.anchors.count != before else { return }
     if self.anchors.count < 2 { lastMm = nil }
     publish(force: true)

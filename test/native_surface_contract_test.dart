@@ -217,6 +217,141 @@ void main() {
     });
   });
 
+  /// Tầng chẩn đoán: mỗi điểm mang theo ĐIỀU KIỆN nó được chấm.
+  ///
+  /// Cả nhóm này canh những chỗ mà sai thì **dải chẩn đoán vẫn hiện đủ số, chỉ
+  /// là số sai** — dạng hỏng tệ nhất có thể có ở một tầng sinh ra để làm bằng
+  /// chứng. Một dải chẩn đoán nói dối còn tệ hơn không có dải nào: nó bác oan
+  /// một giả thuyết đúng, và không ai soi lại được vì con số trông hợp lý.
+  group('chẩn đoán từng điểm', () {
+    test('tia trả về CẢ kết quả raycast, không phải mỗi transform', () {
+      expect(
+        sessionSource,
+        contains('private func raycastFromReticle() -> ARRaycastResult?'),
+        reason:
+            'Trả `simd_float4x4?` là vứt mất `target` và `anchor` của kết quả '
+            'ngay tại chỗ sinh ra chúng — tức là mất đúng hai trường phân biệt '
+            '"mặt phẳng ARKit đã xác nhận" với "mặt phẳng nó đoán ra". Không '
+            'lỗi nào nổ: chẩn đoán vẫn in, chỉ thiếu đúng hai ô.',
+      );
+    });
+
+    test('tầng trúng đọc THẲNG từ kết quả, không suy từ vòng lặp', () {
+      expect(
+        _swiftMethodBody(sessionSource, 'private func makeDiagnostics('),
+        contains('hit.target'),
+        reason:
+            'Suy từ thứ tự vòng lặp trong `raycastFromReticle` là chép lại một '
+            'sự thật mà ARKit đã nói ra sẵn — và bản chép rời khỏi bản gốc ngay '
+            'lượt đầu tiên ai đó đổi danh sách tầng mục tiêu.',
+      );
+    });
+
+    test('chẩn đoán khoá theo identifier của anchor, không theo chỉ số', () {
+      expect(
+        _swiftMethodBody(
+          sessionSource,
+          'func placePoint() -> ArMeasurePlaceResult',
+        ),
+        contains('pointDiagnostics[anchor.identifier]'),
+        reason:
+            'Khoá theo chỉ số mảng thì `adoptUpdatedAnchors` (thay ĐỐI TƯỢNG '
+            'anchor mỗi lượt ARKit chỉnh hệ toạ độ) và `didRemove` làm lệch '
+            'ánh xạ, và chẩn đoán của điểm 1 gắn sang điểm 2 — im lặng.',
+      );
+    });
+
+    test('thứ tự trong mẫu lấy từ anchors, KHÔNG lấy từ values của map', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'private func publish(force: Bool = false)',
+      );
+
+      expect(
+        body,
+        isNot(contains('pointDiagnostics.values')),
+        reason:
+            '`Dictionary.values` KHÔNG có thứ tự. Đọc từ đó thì hai điểm đổi '
+            'chỗ cho nhau ngẫu nhiên giữa các lượt bắn, và dải chẩn đoán gán '
+            'điều kiện của điểm này cho điểm kia — không lỗi nào nổ, và người '
+            'đọc ảnh chụp màn hình không có cách nào biết.',
+      );
+      expect(
+        body,
+        contains('anchors.map'),
+        reason:
+            '`anchors` là danh sách theo ĐÚNG thứ tự chấm — nguồn thứ tự duy '
+            'nhất trong cả lớp.',
+      );
+    });
+
+    test('chẩn đoán bắn ra kể cả khi mới có MỘT điểm', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'private func publish(force: Bool = false)',
+      );
+      final iDiag = body.indexOf('sample["diagnostics"]');
+      final iMm = body.indexOf('if let mm {');
+
+      expect(iDiag, greaterThanOrEqualTo(0));
+      expect(iMm, greaterThanOrEqualTo(0));
+      expect(
+        iDiag,
+        lessThan(iMm),
+        reason:
+            'Nhét chẩn đoán vào trong `if let mm` là chỉ gửi khi đã đủ hai '
+            'điểm — mà điểm ĐẦU mới là chỗ giả thuyết "chấm sai điểm đầu" phải '
+            'kiểm. Mẫu vẫn hợp lệ, dải vẫn hiện lúc đo xong, và cái thiếu chỉ '
+            'lộ ra ở đúng lượt cần nhìn.',
+      );
+    });
+
+    test('tuổi phiên neo vào lời gọi run(), không neo vào lúc dựng lớp', () {
+      expect(
+        _swiftMethodBody(
+          sessionSource,
+          'private func runSession(options: ARSession.RunOptions)',
+        ),
+        contains('sessionStartedAt'),
+        reason:
+            'Đặt mốc ở `init` thì sau một lượt `reset()` (hay một lượt bỏ cuộc '
+            'nối lại vị trí) tuổi phiên vẫn đếm từ lúc mở màn — và biến duy '
+            'nhất dùng để bác hay giữ giả thuyết "máy chưa ấm" thành vô nghĩa, '
+            'trong khi vẫn in ra một con số giây trông bình thường.',
+      );
+    });
+
+    test('góc tia đo so với MẶT PHẲNG, không so với pháp tuyến', () {
+      expect(
+        _swiftMethodBody(sessionSource, 'private func makeDiagnostics('),
+        contains('asin('),
+        reason:
+            'Pháp tuyến vuông góc với mặt, nên nhầm `acos` thành `asin` cho ra '
+            'góc BÙ: 63° in thành 27°. Cả hai đều là một góc hợp lệ, cả hai đều '
+            'nằm trong 0–90, và không có gì trên màn nói ra là mình đang đọc '
+            'nhầm cái nào.',
+      );
+    });
+
+    test('snappedToEdge vẫn là false CỨNG, và chú thích nói rõ chưa tính', () {
+      expect(
+        sessionSource,
+        contains('sample["snappedToEdge"] = false'),
+        reason:
+            'Hít cạnh là một vé khác. Lượt này không đụng tới thuật toán đo.',
+      );
+      expect(
+        sessionSource,
+        contains('CHƯA ĐƯỢC TÍNH'),
+        reason:
+            'Một hằng số `false` không kèm lời cảnh báo đọc y hệt một phép đo '
+            'trả về false. Ngay bên cạnh nó bây giờ là cả một tầng chẩn đoán '
+            'toàn dữ liệu THẬT, nên nguy cơ đọc nhầm nó thành dữ liệu vừa tăng '
+            'lên chứ không giảm.',
+      );
+    });
+  });
+
   group('cấu hình ARKit', () {
     test('lấy nét tự động đặt tường minh, không trông vào mặc định', () {
       expect(
