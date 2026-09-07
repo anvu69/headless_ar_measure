@@ -537,6 +537,19 @@ final class ArMeasureSession: NSObject {
     relocalizationWatch = nil
     guard !isStopped else { return }
 
+    // Kiểm lại trạng thái, đừng tin mỗi cái hẹn giờ.
+    //
+    // Hẹn giờ được đặt theo SỰ KIỆN (`sessionInterruptionEnded`, [resume])
+    // nhưng chỉ được huỷ khi trạng thái CHUYỂN sang `.normal` — và ARKit chỉ
+    // gọi `cameraDidChangeTrackingState` khi trạng thái ĐỔI. Một lượt gián đoạn
+    // ngắn không làm phiên rời `.normal` thì không callback nào tới, không ai
+    // huỷ, và năm giây sau hàm này xoá hai điểm của một phiên hoàn toàn bình
+    // thường — im lặng, giữa lúc người ta đang đo.
+    //
+    // `isInterrupted` là cờ duy nhất nói "đang chờ nối lại": [pause] huỷ hẹn
+    // giờ, và [resume] bật lại cả cờ lẫn hẹn giờ cùng lúc.
+    guard isInterrupted else { return }
+
     // Spec chốt: nối lại không được thì BỎ hai điểm và về `ready`. Đo tiếp trên
     // một hệ toạ độ khác cho ra một con số trông hoàn toàn bình thường mà sai
     // — dạng hỏng tệ nhất, vì không có gì trên màn nói ra.

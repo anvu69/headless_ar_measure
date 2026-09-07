@@ -45,6 +45,10 @@ First release.
   arrives.
 * Relocalization is attempted after an interruption. If it has not succeeded
   within five seconds, both points are dropped and the session returns to
-  `ready` rather than measuring across two different coordinate systems.
+  `ready` rather than measuring across two different coordinate systems. The
+  deadline re-checks the session state before it fires: it is armed by an event
+  but was only ever disarmed by a tracking-state *transition*, and ARKit only
+  reports transitions — so a brief interruption that never left `.normal` used
+  to wipe the points of a perfectly healthy session five seconds later.
 * iOS only. No network calls, no permissions requested by this package — your
   app needs `NSCameraUsageDescription` in its own `Info.plist`.
