@@ -48,6 +48,32 @@ protocol ArMeasureSessionOutput: AnyObject {
   func arMeasureSession(_ session: ArMeasureSession, didProduce sample: [String: Any])
 }
 
+/// Chặn `ARSCNView` dựng `SCNNode` cho anchor.
+///
+/// `ARSCNView` tự dựng và NUÔI một `SCNNode` cho mỗi `ARAnchor` của phiên. Với
+/// `sceneReconstruction = .mesh` đó là hàng trăm node cho hình học không ai vẽ,
+/// cộng một mảng hàng trăm anchor đổ vào callback trên luồng chính.
+///
+/// Header của Apple nói rõ đường thoát: *"If this method is not implemented, a
+/// node will be automatically created. If nil is returned the anchor will be
+/// ignored."*
+///
+/// Gói này KHÔNG vẽ gì — mọi lớp phủ là việc của Flutter — nên trả `nil` cho
+/// MỌI anchor, kể cả hai điểm của chính mình. Không có node nào cần dựng, và
+/// tia bắn ở [ArMeasureSession.raycastFromReticle] đọc dữ liệu của phiên chứ
+/// không đọc cây cảnh SceneKit.
+///
+/// Là một đối tượng RIÊNG chứ không để `ArMeasureSession` tự nhận vai:
+/// `ARSCNViewDelegate` kế thừa `ARSessionObserver`, nên gắn phiên vào đây có
+/// thể làm mỗi sự kiện gián đoạn / đổi trạng thái tới hai lần (một đường qua
+/// `session.delegate`, một đường qua `sceneView.delegate`). Lớp này không cài
+/// phương thức nào của `ARSessionObserver`, nên không có đường thứ hai nào.
+final class ArMeasureNodeSuppressor: NSObject, ARSCNViewDelegate {
+  func renderer(_ renderer: SCNSceneRenderer, nodeFor anchor: ARAnchor) -> SCNNode? {
+    nil
+  }
+}
+
 /// Một phiên đo AR: sở hữu trọn một `ARSCNView`, một `ARSession`, và hai điểm.
 ///
 /// Mỗi platform view dựng đúng một phiên và giữ nó mạnh. Không có phiên dùng
@@ -65,6 +91,11 @@ final class ArMeasureSession: NSObject {
 
   /// Giữ YẾU: plugin sống suốt đời engine, phiên thì chết theo màn AR.
   weak var output: ArMeasureSessionOutput?
+
+  /// Giữ MẠNH, và phải thế: `ARSCNView.delegate` là tham chiếu YẾU (khuôn của
+  /// `SCNView`), nên không ai giữ thì nó chết ngay sau `init` và `ARSCNView`
+  /// lặng lẽ quay về nếp tự dựng node cho từng anchor.
+  private let nodeSuppressor = ArMeasureNodeSuppressor()
 
   // MARK: - Ngưỡng bắn
 
@@ -146,6 +177,8 @@ final class ArMeasureSession: NSObject {
     // `ARSCNView` chỉ còn làm đúng một việc — dựng nền camera.
     sceneView.debugOptions = []
     sceneView.automaticallyUpdatesLighting = false
+    // Và không dựng node nào cho anchor — xem [ArMeasureNodeSuppressor].
+    sceneView.delegate = nodeSuppressor
 
     sceneView.session.delegate = self
     // `ARSession.delegate` là một tham chiếu YẾU, nên dòng trên không dựng vòng.
@@ -179,6 +212,7 @@ final class ArMeasureSession: NSObject {
     trailingEmit?.cancel()
     trailingEmit = nil
     sceneView.session.delegate = nil
+    sceneView.delegate = nil
     sceneView.session.pause()
   }
 

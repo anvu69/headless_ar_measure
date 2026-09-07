@@ -50,5 +50,11 @@ First release.
   but was only ever disarmed by a tracking-state *transition*, and ARKit only
   reports transitions — so a brief interruption that never left `.normal` used
   to wipe the points of a perfectly healthy session five seconds later.
+* No `SCNNode` is built for any anchor. `ARSCNView` creates and maintains one
+  per `ARAnchor` by default, which on a LiDAR device with scene reconstruction
+  is hundreds of nodes for geometry nobody draws. The view delegate returns
+  `nil` from `renderer(_:nodeFor:)` — Apple's header: *"If nil is returned the
+  anchor will be ignored."* This package draws nothing, so there is nothing to
+  build.
 * iOS only. No network calls, no permissions requested by this package — your
   app needs `NSCameraUsageDescription` in its own `Info.plist`.
