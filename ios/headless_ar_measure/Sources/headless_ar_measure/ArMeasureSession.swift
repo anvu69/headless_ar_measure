@@ -410,11 +410,43 @@ final class ArMeasureSession: NSObject {
   private func makeConfiguration() -> ARWorldTrackingConfiguration {
     let config = ARWorldTrackingConfiguration()
     config.planeDetection = [.horizontal, .vertical]
+
+    // Đặt TƯỜNG MINH dù đúng bằng mặc định hiện nay của Apple.
+    //
+    // Đây là cờ duy nhất trong cả cấu hình mà tắt đi thì việc dò khó hẳn lên ở
+    // đúng cái tầm gói này đo. Tầm đo là 0,3–3 m; ở đầu gần của tầm ấy, một
+    // tiêu cự khoá ở vô cực cho ra ảnh nhoè, và ARKit rút điểm đặc trưng từ ảnh
+    // nhoè thì gần như không rút được gì — tức là đúng cái hỏng "bấm mà không
+    // có điểm nào" mà bản này đi sửa.
+    //
+    // Mặc định không phải hợp đồng: nó không nằm trong bất cứ lời hứa nào của
+    // Apple, và một dòng ở đây rẻ hơn nhiều so với việc phát hiện ra nó đã đổi.
+    config.isAutoFocusEnabled = true
+
     if #available(iOS 13.4, *),
       ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
     {
       config.sceneReconstruction = .mesh
     }
+
+    // Có hai cờ nữa trông như "bật cho AR chạy tốt hơn", và cả hai CỐ Ý không
+    // được bật — không cái nào chạm tới việc dò mặt phẳng hay việc bắn tia,
+    // tức là không cái nào làm tia trúng thêm một lần nào:
+    //
+    // * `environmentTexturing` dựng probe ánh sáng để vật ảo phản chiếu được
+    //   cảnh thật. Gói vẽ đúng hai quả cầu và một hình trụ, tất cả bằng vật
+    //   liệu `.constant` KHÔNG nhận đèn (xem `ArMeasureNodes.makeMaterial`) —
+    //   không có gì để phản chiếu, và cái giá là bộ nhớ với GPU cho một texture
+    //   không ai lấy mẫu.
+    //
+    // * `frameSemantics` — `.sceneDepth` chỉ MỞ RA `ARFrame.sceneDepth` cho app
+    //   tự đọc; raycast của ARKit đã ăn lưới LiDAR qua `sceneReconstruction` ở
+    //   trên rồi, và lớp này không đọc bản đồ sâu ở đâu cả.
+    //   `.personSegmentation` là che khuất người trước vật ảo — gói không có
+    //   vật ảo nào cần che, và nó chạy một mạng phân đoạn mỗi khung hình.
+    //
+    // Ghi ra đây vì "bật thêm cho chắc" là phản xạ tự nhiên khi tia đang trượt,
+    // và `test/native_surface_contract_test.dart` ghim cả hai lại.
     return config
   }
 
