@@ -1,16 +1,33 @@
 ## 0.1.0
 
-First release. Dart surface only — no native implementation yet.
+First release.
 
 * `ArMeasure.isAvailable()` — runtime check, never inferred from the device
   model. A missing plugin, a simulator, or a bundle without the native side
   all surface as `arSupported == false`.
+* `ArMeasure.samples` — one broadcast stream of status and distance. Never
+  throws and never ends: a malformed frame is dropped and a channel error is
+  swallowed, because a dead stream leaves the screen frozen on its last frame.
 * `ArMeasure.parseSample()` — builds an `ArMeasureSample` from raw channel
   data. Never throws: an unknown `status` returns `null`, and a status with no
   accompanying numbers still parses with `measurement == null`.
 * `ArMeasureStatus` — eight values covering the full lifecycle of a measuring
   session, including the interruptions that are not the app's fault
   (`interrupted`, `cameraUnauthorized`).
+* `ArMeasureController` — `placePoint`, `undoPoint`, `reset`, `pause`,
+  `resume`, `dispose`, all aimed at one platform view id. `placePoint` returns
+  `false` when the ray hit nothing; every other command is a silent no-op when
+  it cannot be delivered.
 * `ArMeasureView` — a thin `UiKitView` wrapper. Draws nothing itself; every
   number and every label is the caller's job.
-* iOS only. No network calls, no permissions requested by this package.
+* ARKit session: horizontal and vertical plane detection on every device,
+  scene reconstruction where the device supports it, and a layered raycast
+  (`.existingPlaneGeometry`, then `.estimatedPlane`). One code path — LiDAR
+  changes what the second layer hits, not which branch runs.
+* Points are `ARAnchor`s, so they follow ARKit's corrections to the world
+  coordinate system instead of drifting silently away from them.
+* Relocalization is attempted after an interruption. If it has not succeeded
+  within five seconds, both points are dropped and the session returns to
+  `ready` rather than measuring across two different coordinate systems.
+* iOS only. No network calls, no permissions requested by this package — your
+  app needs `NSCameraUsageDescription` in its own `Info.plist`.

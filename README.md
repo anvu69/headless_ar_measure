@@ -17,39 +17,86 @@ dependencies:
 iOS only. There is no Android implementation, and that is deliberate — this
 package wraps ARKit, and everything in it is Apple's semantics.
 
+Your app's `Info.plist` needs an `NSCameraUsageDescription`. Without it the
+app is killed the moment the session starts.
+
 ## Use
 
 ```dart
 final availability = await ArMeasure.isAvailable();
 if (!availability.arSupported) return;
 
-final sample = ArMeasure.parseSample(rawMapFromYourChannel);
-if (sample?.measurement case final m?) {
-  print('${m.mm.toStringAsFixed(0)}mm ±${m.tolMm.toStringAsFixed(0)}mm');
-}
+ArMeasureController? controller;
+
+// The stream feeds the screen; the controller drives the session.
+ArMeasure.samples.listen((sample) {
+  print(sample.status);
+  if (sample.measurement case final m?) {
+    print('${m.mm.toStringAsFixed(0)}mm ±${m.tolMm.toStringAsFixed(0)}mm');
+  }
+});
+
+ArMeasureView(
+  onPlatformViewCreated: (id) => controller = ArMeasureController(id),
+);
+
+// Later, from a button:
+final placed = await controller?.placePoint() ?? false;
+if (!placed) { /* the ray hit nothing — tell the user to aim at a surface */ }
+
+// And from State.dispose():
+controller?.dispose();
 ```
 
 | Call | What it does |
 |---|---|
 | `ArMeasure.isAvailable()` | `ARWorldTrackingConfiguration.isSupported`, asked **at runtime** |
+| `ArMeasure.samples` | Status and distance, one broadcast stream |
 | `ArMeasure.parseSample()` | Builds an `ArMeasureSample` from raw channel data |
 | `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface |
+| `ArMeasureController.placePoint()` | Places a point under the screen centre; `false` if the ray hit nothing |
+| `ArMeasureController.undoPoint()` | Drops the last point |
+| `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
+| `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
+| `ArMeasureController.dispose()` | **Required.** Stops the session and turns the camera off |
+
+### `dispose()` is not optional
+
+iOS has no dispose callback for a platform view — `FlutterPlatformView` has
+exactly one method, `view()`. Nothing on the native side is told when Flutter
+drops the widget. So `ArMeasureController.dispose()` from your
+`State.dispose()` is the only thing that turns the camera off on time; without
+it the session runs until the engine happens to release the view.
+
+### The number drifts, and that is the point
+
+Once both points are down, every refinement ARKit makes to its coordinate
+system produces a new sample with a slightly different number. You watch it
+settle, and that settling is the signal that the reading is worth keeping.
+Freezing it is your job — this package keeps reporting.
+
+Points are stored as `ARAnchor`s, not as raw coordinates, precisely so they
+follow those refinements. A raw `simd_float3` would be frozen in the old frame
+of reference: after a correction the two points drift off the real spots while
+the distance between them still looks perfectly reasonable.
+
+### Tolerance
+
+`tolMm` is `max(2mm, 0.5%)` on a device with scene reconstruction and
+`max(5mm, 1.5%)` without. These are working assumptions, not measured
+constants — but a number shipped without a tolerance is a promise of precision
+the sensor cannot keep.
 
 ## It never throws
 
-A missing plugin registration, a simulator, a device that has not finished
-registering the platform view — all of them surface as sentinel values
-(`isAvailable() => ArAvailability(false, false)`, `parseSample() => null`).
+A missing plugin registration, a simulator, a ray that hit nothing, a command
+aimed at a view that is already gone — all of them surface as sentinel values
+(`isAvailable() => ArAvailability(false, false)`, `parseSample() => null`,
+`placePoint() => false`, every other command a silent no-op). The sample
+stream swallows both malformed frames and channel errors, because a stream
+that dies leaves the screen frozen on its last frame with nothing to say why.
+
 You do not need a `try` around any call in this package.
-
-## Status
-
-This is the Dart-only skeleton of the package: types, channel names, and the
-platform view widget. There is no native (Swift) implementation behind it
-yet, so every method-channel call currently resolves through the
-"missing plugin" path above. That is expected at this stage — it is what
-lets the whole public surface be exercised with `flutter test` on a machine
-with no iPhone attached.
 
 ## Why a package and not a few files in your app
 

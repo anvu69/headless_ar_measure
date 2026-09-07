@@ -77,6 +77,37 @@ class ArMeasure {
   static const String viewType = 'headless_ar_measure/view';
 
   static const MethodChannel _method = MethodChannel(methodChannelName);
+  static const EventChannel _events = EventChannel(eventChannelName);
+
+  static Stream<ArMeasureSample>? _samples;
+
+  /// Luồng trạng thái và số đo của phiên đang chạy.
+  ///
+  /// Một luồng dùng chung cho cả gói, không phải một luồng cho mỗi view: chỉ
+  /// có một mặt camera AR mở tại một lúc, và một kênh sự kiện thứ hai chỉ để
+  /// phân biệt hai view không bao giờ cùng sống là một tầng phức tạp không
+  /// mua được gì.
+  ///
+  /// **Không bao giờ ném, không bao giờ đứt.** Một khung hình hỏng từ tầng nền
+  /// bị bỏ ([ArMeasure.parseSample] trả `null`), và một lỗi trên kênh cũng bị
+  /// bỏ — luồng này nuôi màn hình đang đo, nên để nó chết là để màn đông cứng
+  /// ở khung hình cuối mà không có gì nói ra.
+  ///
+  /// Số đo **trôi**: mỗi lượt ARKit tinh chỉnh hệ toạ độ là một mẫu mới với
+  /// một con số hơi khác. Đông cứng nó lại là việc của người gọi, không phải
+  /// của gói.
+  static Stream<ArMeasureSample> get samples {
+    return _samples ??= _events
+        .receiveBroadcastStream()
+        .handleError((Object _) {})
+        .map(
+          (Object? event) => event is Map
+              ? parseSample(Map<Object?, Object?>.from(event))
+              : null,
+        )
+        .where((ArMeasureSample? s) => s != null)
+        .cast<ArMeasureSample>();
+  }
 
   /// Máy này chạy được ARKit tới đâu. Hỏi LÚC CHẠY, không suy từ đời máy.
   ///
@@ -136,6 +167,80 @@ class ArMeasure {
         : ArMeasurement(mm: mm, tolMm: tolMm, snappedToEdge: snappedToEdge);
 
     return ArMeasureSample(status: status, measurement: measurement);
+  }
+}
+
+/// Các lệnh gửi tới đúng một platform view.
+///
+/// Dựng từ id mà [ArMeasureView.onPlatformViewCreated] báo ra. Lệnh mang theo
+/// id ấy, nên gói không cần một kênh riêng cho mỗi view — và không cần một kênh
+/// riêng thì cũng không có chỗ nào để dựng vòng giữ view sống mãi ở tầng Swift.
+///
+/// **Không hàm nào ném.** Plugin chưa đăng ký, view đã chết, máy ảo — tất cả
+/// rơi vào cùng một đường: lệnh không làm gì và trả về bình thường.
+class ArMeasureController {
+  const ArMeasureController(this.viewId);
+
+  /// Id platform view, từ [ArMeasureView.onPlatformViewCreated].
+  final int viewId;
+
+  /// Chấm một điểm tại con trỏ giữa màn.
+  ///
+  /// Trả `false` khi **không có điểm nào được đặt**: tia bắn ra trượt (chĩa vào
+  /// trời, vào mặt kính, vào chỗ ARKit chưa dựng nổi hình học), phiên đang ở
+  /// trạng thái không cho chấm, hoặc đã đủ hai điểm.
+  ///
+  /// Vì sao là giá trị trả về chứ không phải một trạng thái bắn ra trên luồng
+  /// [ArMeasure.samples]: chấm trượt **không đổi trạng thái gì cả** — phiên vẫn
+  /// `ready`, y như một giây trước. Bắn thêm một `ready` nữa để nói "vừa rồi
+  /// trượt" là gửi một tin không phân biệt được với một lần bám lại bình
+  /// thường. Giá trị trả về thì đi thẳng về đúng cú chạm đã gây ra nó, nên
+  /// người gọi rung hay nháy được ngay tại chỗ.
+  Future<bool> placePoint() async {
+    try {
+      final ok = await ArMeasure._method.invokeMethod<bool>('placePoint', {
+        'viewId': viewId,
+      });
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Bỏ điểm chấm gần nhất. Chưa có điểm nào thì không làm gì.
+  ///
+  /// Không trả về gì, khác với [placePoint]: người gọi đã biết nó đang có mấy
+  /// điểm (từ chính [ArMeasure.samples]), nên "hoàn tác lúc chưa có gì" là
+  /// chuyện tự chặn được — còn "tia bắn trượt" thì không.
+  Future<void> undoPoint() => _send('undoPoint');
+
+  /// Bỏ hết điểm và dựng lại hệ toạ độ từ đầu.
+  Future<void> reset() => _send('reset');
+
+  /// Tạm dừng camera, GIỮ hai điểm.
+  Future<void> pause() => _send('pause');
+
+  /// Chạy lại sau [pause].
+  ///
+  /// ARKit sẽ tìm lại hệ toạ độ cũ. Không tìm được thì phiên bỏ hai điểm và
+  /// quay về [ArMeasureStatus.ready] — đo tiếp trên một hệ toạ độ khác cho ra
+  /// một con số trông bình thường mà sai.
+  Future<void> resume() => _send('resume');
+
+  /// Dừng hẳn phiên và tắt camera.
+  ///
+  /// **Phải gọi từ `State.dispose()`.** iOS không có callback dispose cho
+  /// platform view — protocol `FlutterPlatformView` chỉ có đúng một phương
+  /// thức `view()` — nên đây là đường chính, không phải một lượt dọn cho gọn.
+  /// Quên gọi thì camera còn chạy tới lúc engine tình cờ thả view.
+  Future<void> dispose() => _send('dispose');
+
+  Future<void> _send(String method) async {
+    try {
+      await ArMeasure._method.invokeMethod<void>(method, {'viewId': viewId});
+    } catch (_) {
+      // Nuốt có chủ đích: xem chú thích ở đầu lớp.
+    }
   }
 }
 

@@ -1,14 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Bản kê khai quyền riêng tư của gói. Nối vào bản dựng bằng HAI đường, và cả
+	hai phải mở: `s.resource_bundles` trong podspec (đường CocoaPods) và
+	`.process("PrivacyInfo.xcprivacy")` trong Package.swift (đường Swift Package
+	Manager). Khuôn `flutter create` để đường thứ hai dưới dạng chú thích, nên
+	một gói bật SPM sẽ ship thiếu tệp này mà không có lỗi nào nổ.
+
+	Gói KHÔNG thu thập gì, KHÔNG gọi mạng, và KHÔNG ghi tệp nào — nên không có
+	`NSPrivacyAccessedAPICategoryFileTimestamp` ở đây. Cố khai thêm cho "đủ" là
+	khai sai: Apple đòi khai đúng những API mình gọi, không phải một danh sách
+	cho an toàn.
+-->
 <plist version="1.0">
 <dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
 	<key>NSPrivacyTrackingDomains</key>
-	<array/>
-	<key>NSPrivacyAccessedAPITypes</key>
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array/>
-	<key>NSPrivacyTracking</key>
-	<false/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!--
+				`CACurrentMediaTime()` trong ArMeasureSession đọc đồng hồ tính từ
+				lúc máy khởi động — nó là API thuộc nhóm phải khai lý do. Gói
+				dùng nó để giãn nhịp bắn mẫu giữa hai sự kiện TRONG app, và con
+				số ấy không đi đâu khỏi máy. Đó đúng là lý do 35F9.1.
+			-->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
