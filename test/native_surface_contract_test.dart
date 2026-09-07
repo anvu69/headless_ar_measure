@@ -184,7 +184,13 @@ void main() {
       );
 
       expect(body, contains('let probe = probeReticle(now: now)'));
-      expect(body, contains('refreshAimTarget(now: now, probe: probe)'));
+      // `frame:` vào từ 0.5.0: lượt lấy mẫu ngắm nay đọc thêm đám mây điểm thô
+      // của ĐÚNG khung hình đã sinh ra lượt dò này. Xem nhóm "đếm điểm đặc
+      // trưng quanh tia".
+      expect(
+        body,
+        contains('refreshAimTarget(now: now, frame: frame, probe: probe)'),
+      );
       expect(
         'raycastFromReticle()'.allMatches(body).length,
         0,
@@ -233,9 +239,14 @@ void main() {
         // Gộp khoảng trắng: điều kiện này dài quá một dòng, và chỗ trình định
         // dạng Swift ngắt dòng không phải thứ ca kiểm này canh.
         sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        // Cố ý KHÔNG ghim dấu `{` đóng điều kiện: ca này canh chuyện `aimTarget`
+        // CÓ MẶT trong điều kiện gộp, không canh rằng nó là khoá cuối cùng.
+        // Ghim cả dấu đóng thì mỗi khoá thêm vào sau đều làm ca này đỏ vì một
+        // lý do chẳng liên quan gì tới thứ nó bảo vệ. Hình dạng ĐẦY ĐỦ của
+        // điều kiện có ca riêng ở nhóm "đếm điểm đặc trưng quanh tia".
         contains(
           'if !force, status == lastStatus, '
-          'limitedReason == lastLimitedReason, aimTarget == lastAimTarget {',
+          'limitedReason == lastLimitedReason, aimTarget == lastAimTarget',
         ),
         reason:
             'Bộ giãn nhịp neo vào "số đo đổi quá 0,5 mm". Tầng ngắm đổi KHÔNG '
@@ -800,6 +811,140 @@ void main() {
             'điểm ấy nằm ở CAO ĐỘ MẶT BÀN chứ không phải mặt iPad, và chĩa vào '
             'tường xa thì nó trả một điểm đâu đó dọc mặt sàn kéo dài. Một con '
             'số trông bình thường mà sai là dạng hỏng tệ nhất của gói này.',
+      );
+    });
+  });
+
+  /// PHÉP ĐO của 0.5.0, phục vụ một quyết định đang treo: có nên tự khớp mặt
+  /// phẳng bằng RANSAC trên `rawFeaturePoints` thay cho raycast của ARKit hay
+  /// không.
+  ///
+  /// Cả nhóm này canh một dạng hỏng câm rất riêng: phép đo VẪN chạy, hai con
+  /// số VẪN hiện lên dải chẩn đoán, và chúng trả lời một câu hỏi KHÁC câu hỏi
+  /// người đọc tưởng — rồi một quyết định kiến trúc được đóng dựa trên chúng.
+  group('đếm điểm đặc trưng quanh tia', () {
+    test('đếm trên đám mây THÔ, không đếm lại kết quả của ARKit', () {
+      expect(
+        sessionSource,
+        contains('rawFeaturePoints'),
+        reason:
+            'Câu hỏi cần trả lời là "có NGUYÊN LIỆU không", và nguyên liệu ấy '
+            'là đám mây điểm thô. Đếm bất cứ thứ gì ARKit đã lọc — mặt phẳng '
+            'đã dò, kết quả raycast — là hỏi lại đúng cái câu mà `.estimatedPlane` '
+            'đã trả lời rỗng, rồi ghi câu trả lời ấy ra hai lần.',
+      );
+    });
+
+    test('một lượt LẤY MẪU nuôi cả tầng tia lẫn phép đếm', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func refreshAimTarget('),
+      );
+
+      expect(
+        body,
+        contains('makeFeatureCensus('),
+        reason:
+            'Hai con số này chỉ có nghĩa khi chúng nói về CÙNG một khung hình '
+            'với `aimTarget`: cả phép đo là để đọc câu "tia trượt, mà quanh nó '
+            'có 40 điểm". Lấy mẫu ở hai mốc riêng — kể cả cùng nhịp 10 Hz — là '
+            'hai lưới lệch pha, và dải chẩn đoán ghép một lượt trượt của khung '
+            'này với một phép đếm của khung khác. Không lỗi nào nổ, và con số '
+            'đọc ra vẫn hợp lý.',
+      );
+      expect(
+        body,
+        contains('aimProbeIntervalSeconds'),
+        reason:
+            'Đếm cả đám mây là O(n) với n tới hàng nghìn. Nó phải đi trên lưới '
+            'nhịp ĐÃ CÓ, không phải mỗi khung hình.',
+      );
+    });
+
+    test('phép đếm KHÔNG tự bắn một tia nào', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func makeFeatureCensus('),
+        ),
+        isNot(contains('raycast')),
+        reason:
+            'Phép đếm là một lượt ĐỌC. Bắn thêm tia ở đây là đúng cái vòng lặp '
+            'mà phép đo này sinh ra để phá.',
+      );
+    });
+
+    test('hình nón có nửa góc và CỬA SỔ khoảng cách, không phải nón vô hạn', () {
+      expect(
+        sessionSource,
+        contains('featureConeHalfAngleDegrees'),
+        reason: 'Nửa góc phải là một hằng số đọc được, không phải một số trần.',
+      );
+      for (final name in [
+        'featureRangeNearMeters',
+        'featureRangeFarMeters',
+      ]) {
+        expect(
+          sessionSource,
+          contains(name),
+          reason:
+              'Nón dựng từ đỉnh camera là VÔ HẠN. Không cắt đầu xa thì "quanh '
+              'tia" lặng lẽ thành "đâu đó theo hướng này", và trong một căn '
+              'phòng thì bức tường phía sau chiếm trọn phép đếm — đúng con số '
+              'nói "có nguyên liệu" trong khi nguyên liệu nằm cách mặt bàn ba '
+              'mét.',
+        );
+      }
+    });
+
+    test('nón dựng quanh trục NHÌN của camera, không quanh một trục thế giới', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func makeFeatureCensus('),
+      );
+
+      expect(
+        body,
+        contains('columns.2'),
+        reason:
+            'Camera ARKit nhìn theo −Z của chính nó (cột 2 của transform, đảo '
+            'dấu). Lấy nhầm cột là một cái nón chĩa sang ngang: nó vẫn đếm ra '
+            'số, số ấy vẫn đổi khi rê máy, và không có gì trên màn nói rằng nó '
+            'đang đếm ở một hướng khác hướng người dùng đang ngắm.',
+      );
+    });
+
+    test('hai con số đi lên Dart trong khối chẩn đoán, và Dart đọc chúng', () {
+      expect(sessionSource, contains('diagnostics["features"]'));
+      for (final key in ['"total"', '"nearRay"']) {
+        expect(
+          sessionSource,
+          contains(key),
+          reason:
+              'Thiếu $key thì phép đo mất đúng một nửa. Riêng một mình, "tổng '
+              'khung" không phân biệt được "phòng trơn" với "chĩa nhầm chỗ".',
+        );
+      }
+      expect(
+        dartSource,
+        contains("raw['features']"),
+        reason: 'Swift gửi mà Dart không đọc thì dải chẩn đoán vẫn trống.',
+      );
+    });
+
+    test('phép đếm đổi thì KHÔNG bị bộ giãn nhịp nuốt', () {
+      expect(
+        sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        contains(
+          'if !force, status == lastStatus, '
+          'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
+          'featureCensus == lastFeatureCensus {',
+        ),
+        reason:
+            'ĐÂY là ca quyết định của cả phép đo, và nó canh đúng cảnh hỏng '
+            'đang điều tra: phòng trơn, tia trượt LIÊN TỤC. Ở đó `status` đứng '
+            'im ở `ready`, `limitedReason` là `nil`, `aimTarget` là `nil` và '
+            '`mm` là `nil` — nên nhánh nén ở dưới `return` thẳng, và `publish` '
+            'KHÔNG BAO GIỜ chạy. Không đưa phép đếm vào điều kiện gộp này thì '
+            'hai con số mới không bao giờ tới Dart ở đúng cái cảnh chúng sinh '
+            'ra để đo, và dải chẩn đoán im lặng đọc y hệt "chưa dựng xong".',
       );
     });
   });

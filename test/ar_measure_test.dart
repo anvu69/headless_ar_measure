@@ -380,6 +380,75 @@ void main() {
       expect(s?.diagnostics?.video?.fps, isNull);
     });
 
+    // Đếm điểm đặc trưng: PHÉP ĐO của 0.5.0, xem [ArFeatureCensus]. Cùng lối
+    // với khuôn hình — chuyện của KHUNG HÌNH chứ không của một điểm, và nó
+    // phải đọc được lúc chưa chấm nổi điểm nào, vì đó đúng là lúc câu hỏi nó
+    // sinh ra để trả lời đang được hỏi.
+    test('đếm vân đọc được khi chưa có điểm nào và chưa có khuôn hình', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'features': {'total': 312, 'nearRay': 14},
+        },
+      });
+
+      expect(s?.diagnostics, isNotNull);
+      expect(s?.diagnostics?.points, isEmpty);
+      expect(s?.diagnostics?.video, isNull);
+      expect(s?.diagnostics?.features?.total, 312);
+      expect(s?.diagnostics?.features?.nearRay, 14);
+    });
+
+    test('đếm vân đi cùng khuôn hình và chẩn đoán điểm, không loại nhau', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+          'video': {'width': 3840, 'height': 2160, 'fps': 30},
+          'features': {'total': 980, 'nearRay': 0},
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+      expect(s?.diagnostics?.video?.fps, 30);
+      expect(s?.diagnostics?.features?.total, 980);
+      expect(s?.diagnostics?.features?.nearRay, 0);
+    });
+
+    // `0` và `null` KHÔNG được đổ chung. `0` là "ARKit có đám mây và đám mây
+    // rỗng" — một sự thật, và là sự thật quyết định phép đo này. `null` là
+    // "bản nền này không nói". Gộp hai thứ là xoá đúng câu trả lời.
+    test('không có khối vân thì về null, hai khoá kia vẫn sống', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+          'video': {'width': 1920, 'height': 1440, 'fps': 60},
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+      expect(s?.diagnostics?.video, isNotNull);
+      expect(s?.diagnostics?.features, isNull);
+    });
+
+    test('đếm vân sai kiểu không ném, hai ô về null', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'features': {'total': 'nhieu', 'nearRay': null},
+          },
+        });
+      }, returnsNormally);
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.diagnostics?.features, isNotNull);
+      expect(s?.diagnostics?.features?.total, isNull);
+      expect(s?.diagnostics?.features?.nearRay, isNull);
+    });
+
     test('mặt ước lượng: không có mặt phẳng nào, ba khoá mp về null', () {
       final s = ArMeasure.parseSample({
         'status': 'firstPointPlaced',

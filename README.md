@@ -24,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.4.0
+  headless_ar_measure: ^0.5.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -206,6 +206,16 @@ session rather than one tap: the `width`, `height` and `fps` of the ARKit video
 format actually running. It is present **before any point exists**, which is
 when you most need it — that is the moment someone is asking why nothing can be
 placed. See "The video format is an experiment" below.
+
+`ArMeasureDiagnostics.features` sits there for the same reason and is present at
+the same moments, but it is an **instrument, not a feature**: `total` counts
+every point in the current frame's `rawFeaturePoints`, and `nearRay` counts how
+many of those fall inside a 10° cone around the centre ray, 0.2–3m out. It exists
+to answer one open question — when the raycast misses continuously, is there any
+material a plane fit could use? — and it is expected to be removed once that is
+answered. `0` and `null` mean different things: `0` is an empty cloud, `null` is
+a build that was not asked. See the 0.5.0 CHANGELOG entry, which carries the
+reasoning behind all three constants and the emit-rate cost.
 
 Why it exists: a tile edge measured 382mm against a true 400, two tiles measured
 795 against 800, and every explanation anyone proposed fitted both numbers

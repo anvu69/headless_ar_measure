@@ -506,6 +506,67 @@ final class ArMeasureSession: NSObject {
   // [aimProbeIntervalSeconds], và mẫu là kết quả của một lượt raycast thật chứ
   // không phải một lời hứa đã hết hạn còn được gia hạn.
 
+  // MARK: - Hình nón đếm điểm đặc trưng
+
+  /// Nửa góc mở của hình nón quanh tia ngắm, độ.
+  ///
+  /// **Vì sao một hình NÓN, không phải một hình trụ quanh tia.** Tâm ngắm là
+  /// một hình có cỡ cố định trên MÀN, nên "quanh tia ngắm" là một vùng lân cận
+  /// theo GÓC, không theo mét: cùng một mảng bề mặt chắn ít góc hơn khi lùi ra
+  /// xa, và cảm giác "nằm dưới tâm ngắm" của người dùng đi theo góc chứ không
+  /// theo bề rộng thật.
+  ///
+  /// **Vì sao 10° chứ không phải cỡ của chính tâm ngắm.** Ống kính góc rộng sau
+  /// của máy iOS phủ khoảng 60° theo cạnh dài khuôn hình; trên một màn rộng cỡ
+  /// 400 pt thì đó là chừng 7 pt cho mỗi độ, nên hình tâm ngắm (vài chục pt)
+  /// chắn chưa tới 5°. Một nón bằng đúng tâm ngắm sẽ trả lời câu "ngay dưới
+  /// tâm ngắm có gì không" — mà `.estimatedPlane` của ARKit đã trả lời rỗng,
+  /// nên đếm lại là ghi cùng một câu trả lời ra lần thứ hai. Phép khớp mặt
+  /// phẳng KHÔNG cần điểm nằm dưới tâm ngắm; nó cần điểm nằm trên CÙNG MỘT bề
+  /// mặt ở gần đó. Nón vì thế cố ý rộng hơn tâm ngắm.
+  ///
+  /// **10° là con số làm cho số KHÔNG trở nên dứt khoát.** Đây là một phép đo
+  /// để quyết định bỏ hay theo, và nhánh rẻ nhất là nhánh bỏ. Với nón hẹp, một
+  /// kết quả 0 còn mơ hồ — nguyên liệu có thể nằm ở 6°. Với nón rộng, 0 nghĩa
+  /// là quanh tia thật sự không có gì, và ý tưởng RANSAC chết ngay tại đó
+  /// không cần dựng thêm một dòng nào.
+  ///
+  /// Cái giá của bề rộng ấy phải nói thẳng: ở cự ly làm việc 0,3–1,5 m nón phủ
+  /// một mảng bán kính 0,05–0,26 m — đúng cỡ mặt bàn người ta ngắm — nhưng ở
+  /// đầu xa của cửa sổ (3 m) nó đã phủ bán kính 0,53 m. Nên một con số CAO chưa
+  /// chứng minh nguyên liệu nằm trên bề mặt đang ngắm; nó chỉ nói "chưa được
+  /// loại trừ". Một con số THẤP thì kết luận được ngay.
+  ///
+  /// Chọn theo lập luận trên, chưa nghiệm thu trên máy thật.
+  private static let featureConeHalfAngleDegrees: Double = 10
+
+  /// Cửa sổ khoảng cách của phép đếm, mét.
+  ///
+  /// Nón dựng từ đỉnh camera là VÔ HẠN. Không cắt đầu xa thì "quanh tia" lặng
+  /// lẽ thành "đâu đó theo hướng này", và trong một căn phòng thì bức tường
+  /// phía sau chiếm trọn phép đếm — đúng con số nói "có nguyên liệu" trong khi
+  /// nguyên liệu nằm cách mặt bàn ba mét. 3 m nằm ngoài tầm làm việc của app
+  /// (một khung cửa nhìn từ bên kia phòng nhỏ) và nằm trong lòng một phòng ở
+  /// bình thường.
+  ///
+  /// Đầu gần cắt vì chất lượng chứ không vì hình học: điểm đặc trưng thô dựng
+  /// bằng phép tam giác theo thời gian, và ở cự ly rất gần thì đường đáy quá
+  /// ngắn nên toạ độ trả về phần lớn là nhiễu. Không có gì trong app này đo từ
+  /// 20 cm.
+  private static let featureRangeNearMeters: Float = 0.2
+  private static let featureRangeFarMeters: Float = 3
+
+  /// Hai con số của một lượt đếm. Xem [makeFeatureCensus].
+  private struct ArFeatureCensus: Equatable {
+    /// Tổng số điểm trong đám mây thô của khung hình này.
+    let total: Int
+
+    /// Bao nhiêu trong số ấy nằm trong hình nón quanh tia ngắm.
+    let nearRay: Int
+
+    var payload: [String: Any] { ["total": total, "nearRay": nearRay] }
+  }
+
   // MARK: - Trạng thái
 
   /// Hai điểm đã chấm, theo thứ tự chấm. Nhiều nhất hai.
@@ -590,6 +651,22 @@ final class ArMeasureSession: NSObject {
   /// [probeReticle] là chỗ DUY NHẤT ghi vào biến này.
   private var liveHitPoint: SIMD3<Float>?
 
+  /// Phép đếm điểm đặc trưng của khung hình đã sinh ra lượt lấy mẫu ngắm gần
+  /// nhất. `nil` là chưa đếm lượt nào, hoặc ARKit không giao đám mây điểm.
+  ///
+  /// **Đây là một PHÉP ĐO, không phải một tính năng**, và nó phục vụ đúng một
+  /// câu hỏi đang treo: khi [raycastFromReticle] trượt liên tục, quanh tia có
+  /// nguyên liệu để tự khớp một mặt phẳng hay không. Không có gì trong đây quay
+  /// lại đụng vào phép đo khoảng cách, vào tâm ngắm, hay vào cách chấm điểm.
+  ///
+  /// Ghi ở [refreshAimTarget], cùng lượt và cùng lưới nhịp với [aimTarget]:
+  /// hai con số chỉ có nghĩa khi chúng nói về CÙNG một khung hình với tầng tia.
+  ///
+  /// Chỉ đếm khung hình HIỆN TẠI, không tích luỹ và không giữ lịch sử. Cộng dồn
+  /// theo thời gian là một quyết định riêng, và nó chỉ đáng bàn sau khi con số
+  /// một-khung nói xong.
+  private var featureCensus: ArFeatureCensus?
+
   /// Khung lớp phủ bắn ra gần nhất — để chặn bắn lại y hệt, và để phát lại cho
   /// người nghe tới muộn.
   private var lastOverlayFrame: [String: Any]?
@@ -604,6 +681,7 @@ final class ArMeasureSession: NSObject {
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
   private var lastAimTarget: ArRaycastTarget?
+  private var lastFeatureCensus: ArFeatureCensus?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
 
@@ -1324,10 +1402,73 @@ final class ArMeasureSession: NSObject {
     return .hit(point, Self.raycastTarget(of: hit))
   }
 
-  /// Cập nhật [aimTarget] theo lượt dò của khung hình này.
+  /// Đếm điểm đặc trưng thô của một khung hình: tổng, và số nằm quanh tia ngắm.
   ///
-  /// Trả `true` khi tầng ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì
-  /// mới.
+  /// **PHÉP ĐO, không phải một bước của phép đo khoảng cách.** Nó tồn tại để
+  /// trả lời một câu hỏi đang treo: cảnh làm [raycastFromReticle] trả `nil`
+  /// liên tục — bàn gỗ phủ tấm lót chuột đen phẳng lì, tường trơn, trong nhà
+  /// buổi tối — có còn nguyên liệu để tự khớp một mặt phẳng không. Câu hỏi ấy
+  /// đáng hỏi vì `.estimatedPlane` VỀ BẢN CHẤT đã là "khớp mặt phẳng từ điểm
+  /// đặc trưng quanh tia", và nó trả rỗng. Nếu quanh tia cũng không có điểm nào
+  /// thì không có gì để dựng, và một tầng khớp mặt phẳng tự viết cũng sẽ trả về
+  /// đúng cái rỗng ấy, chỉ tốn hơn.
+  ///
+  /// Trả `nil` khi ARKit không giao đám mây điểm. `nil` và `total: 0` là HAI
+  /// chuyện, và cả phép đo nằm ở chỗ phân biệt chúng: `0` là "có đám mây, đám
+  /// mây rỗng" — một sự thật đóng được quyết định; `nil` là "không hỏi được".
+  /// Đổ chung là xoá đúng câu trả lời.
+  ///
+  /// Không giữ `frame` lại quá lời gọi này, và không giữ `ARPointCloud`: giữ
+  /// một `ARFrame` là chặn ARKit giao khung mới. Chỉ hai `Int` đi ra.
+  ///
+  /// O(n) với vài phép nhân vô hướng mỗi điểm, n tới hàng nghìn — nên nó phải
+  /// chạy trên lưới nhịp của [refreshAimTarget], không phải mỗi khung hình.
+  private func makeFeatureCensus(from frame: ARFrame) -> ArFeatureCensus? {
+    guard let cloud = frame.rawFeaturePoints else { return nil }
+    let points = cloud.points
+    guard !points.isEmpty else { return ArFeatureCensus(total: 0, nearRay: 0) }
+
+    let transform = frame.camera.transform
+    let originColumn = transform.columns.3
+    let origin = SIMD3<Float>(originColumn.x, originColumn.y, originColumn.z)
+    // Camera ARKit nhìn theo −Z CỦA CHÍNH NÓ: cột 2 của transform là +Z, nên
+    // trục ngắm là cột ấy đảo dấu. Lấy nhầm cột (hay quên dấu trừ) dựng ra một
+    // cái nón chĩa đi chỗ khác — nó vẫn đếm ra số, số ấy vẫn đổi khi rê máy, và
+    // không có gì trên màn nói rằng nó đang đếm ở một hướng khác hướng ngắm.
+    let forwardColumn = transform.columns.2
+    let forward = simd_normalize(
+      SIMD3<Float>(-forwardColumn.x, -forwardColumn.y, -forwardColumn.z))
+
+    // So `dot(d, forward) >= cos(nửa góc) * |d|` thay vì chia `dot` cho `|d|`:
+    // cùng một bất đẳng thức, bớt một phép chia mỗi điểm, và không có đường
+    // chia cho không.
+    let cosHalfAngle = Float(cos(Self.featureConeHalfAngleDegrees * .pi / 180))
+
+    var nearRay = 0
+    for point in points {
+      let toPoint = point - origin
+      let range = simd_length(toPoint)
+      guard range >= Self.featureRangeNearMeters,
+        range <= Self.featureRangeFarMeters
+      else { continue }
+      if simd_dot(toPoint, forward) >= cosHalfAngle * range { nearRay += 1 }
+    }
+
+    return ArFeatureCensus(total: points.count, nearRay: nearRay)
+  }
+
+  /// Cập nhật [aimTarget] và [featureCensus] theo lượt dò của khung hình này.
+  ///
+  /// Trả `true` khi một trong hai ĐỔI — người gọi dùng nó để khỏi bắn khi không
+  /// có gì mới.
+  ///
+  /// **Hai thứ, MỘT lượt lấy mẫu, và đó là điều kiện để chúng có nghĩa.** Cả
+  /// phép đếm sinh ra để đọc được một câu duy nhất: "tia trượt, mà quanh nó có
+  /// bằng này điểm". Câu ấy chỉ đúng khi tầng tia và phép đếm nói về CÙNG một
+  /// khung hình. Cho phép đếm một mốc riêng — kể cả một mốc chạy đúng nhịp 10 Hz
+  /// ấy — là hai lưới lệch pha, và dải chẩn đoán ghép một lượt trượt của khung
+  /// này với một phép đếm của khung khác. Không lỗi nào nổ, và con số đọc ra vẫn
+  /// hợp lý.
   ///
   /// **Không có quãng ân hạn nào.** Tầng ở đây LUÔN là kết quả của một lượt
   /// raycast thật, cũ nhiều nhất một nhịp lấy mẫu. Bản trước giữ cờ "đã khoá"
@@ -1341,14 +1482,22 @@ final class ArMeasureSession: NSObject {
   /// dò MỖI khung hình, và một hình đổi 60 lần mỗi giây thì không đọc ra trạng
   /// thái nào — nhấp nháy ở 10 Hz thì đọc được, và nó là THÔNG TIN: chỗ này chỉ
   /// bám được từng lúc, hãy chĩa sang chỗ khác.
-  private func refreshAimTarget(now: TimeInterval, probe: ArReticleProbe) -> Bool {
-    let was = aimTarget
+  private func refreshAimTarget(
+    now: TimeInterval, frame: ARFrame, probe: ArReticleProbe
+  ) -> Bool {
+    let wasTarget = aimTarget
+    let wasCensus = featureCensus
 
     switch probe {
     case .unavailable:
       // Không đợi nhịp nào: trạng thái phiên đã nói thẳng rằng cú bấm tới không
       // đặt nổi điểm nào. Xoá mốc để lượt dò kế tiếp lấy mẫu được ngay.
+      //
+      // Phép đếm đi cùng: nó là số liệu VỀ một lượt ngắm, và ở đây không có
+      // lượt ngắm nào. Giữ con số của lượt trước là để trên dải chẩn đoán một
+      // phép đếm gán cho một khoảnh khắc nó không nói về.
       aimTarget = nil
+      featureCensus = nil
       lastAimSampleAt = 0
     case .skipped:
       break
@@ -1361,13 +1510,18 @@ final class ArMeasureSession: NSObject {
       // thấp thì cùng lắm là mời người dùng ngắm kỹ hơn, đoán cao là hứa một
       // thứ chưa ai kiểm.
       aimTarget = target ?? .estimatedPlane
+      featureCensus = makeFeatureCensus(from: frame)
     case .missed:
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       aimTarget = nil
+      // Đếm cả ở nhánh TRƯỢT, và đây mới là nhánh phép đo sinh ra để phục vụ:
+      // cảnh đang điều tra là một chuỗi trượt không dứt. Chỉ đếm lúc trúng là
+      // đo đúng cái cảnh không cần đo.
+      featureCensus = makeFeatureCensus(from: frame)
     }
 
-    return was != aimTarget
+    return wasTarget != aimTarget || wasCensus != featureCensus
   }
 
   // MARK: - Trạng thái và số đo
@@ -1632,6 +1786,14 @@ final class ArMeasureSession: NSObject {
     // thấy chúng cạnh nhau.
     let aimLocked = aimTarget != nil
 
+    // Cùng lời chặn, cùng lý do: [refreshAimTarget] đã xoá phép đếm ở mọi
+    // trạng thái khác, nhưng nó chỉ chạy khi CÓ khung hình, còn `publish` tới
+    // được từ những đường không có khung nào (lỗi phiên, `pause`, mất quyền
+    // camera). Một phép đếm cũ lọt ra ngoài kênh ở đó là hai con số gán cho một
+    // khoảnh khắc không có lượt ngắm nào.
+    let featureCensus =
+      (status == .ready || status == .firstPointPlaced) ? self.featureCensus : nil
+
     // `limitedReason` và `aimTarget` nằm trong điều kiện gộp cùng `status`, và
     // cả hai vì cùng một lý do: bộ nén ở dưới neo vào "số đo đổi quá 0,5 mm",
     // mà cả hai khoá này đổi ĐƯỢC trong khi số đo không đổi một chút nào.
@@ -1650,8 +1812,23 @@ final class ArMeasureSession: NSObject {
     // bị chặn từ chỗ khác: cờ chỉ lấy mẫu trên lưới 10 Hz
     // ([aimProbeIntervalSeconds]), nên nó bắn được nhiều nhất 10 lần/giây và
     // thực tế còn ít hơn nhiều — chỉ ĐỔI mới bắn.
+    // Phép đếm nằm trong điều kiện gộp vì một lẽ MẠNH HƠN cả `aimTarget`, và
+    // nó là lẽ khiến cả phép đo dùng được: ở đúng cảnh đang điều tra — phòng
+    // trơn, tia trượt liên tục — `status` đứng im ở `ready`, `limitedReason`
+    // là `nil`, `aimTarget` là `nil`, `mm` là `nil`, nên nhánh dưới `return`
+    // thẳng và `publish` KHÔNG BAO GIỜ chạy. Để phép đếm ngoài điều kiện này
+    // thì hai con số mới không bao giờ tới Dart ở đúng cảnh chúng sinh ra để
+    // đo, và dải chẩn đoán im lặng đọc y hệt "chưa dựng xong".
+    //
+    // **Cái giá phải nói thẳng**: khác `aimTarget` (đổi vài lần mỗi phiên),
+    // phép đếm đổi gần như mỗi lượt lấy mẫu, nên quãng người dùng đang ngắm giờ
+    // bắn tới 10 mẫu/giây thay vì im lặng. Trần 10 Hz đã có sẵn từ
+    // [aimProbeIntervalSeconds] và không vượt qua được, nhưng SÀN thì đã khác:
+    // kênh trạng thái từ nay không còn im khi không có gì xảy ra. Đây là giá
+    // của một bản ĐO, và nó ra cùng lúc với phép đo — bỏ phép đo là sàn ấy trở
+    // lại y như cũ.
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
-      aimTarget == lastAimTarget
+      aimTarget == lastAimTarget, featureCensus == lastFeatureCensus
     {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
@@ -1734,6 +1911,12 @@ final class ArMeasureSession: NSObject {
     if let videoFormat {
       diagnostics["video"] = videoFormat
     }
+    // Phép đếm điểm đặc trưng: cùng khối, cùng lý do với khuôn hình — chuyện
+    // của KHUNG HÌNH chứ không của một điểm, và phải đọc được lúc chưa chấm nổi
+    // điểm nào, vì đó đúng là lúc câu hỏi nó sinh ra để trả lời đang được hỏi.
+    if let featureCensus {
+      diagnostics["features"] = featureCensus.payload
+    }
     if !diagnostics.isEmpty {
       sample["diagnostics"] = diagnostics
     }
@@ -1753,6 +1936,7 @@ final class ArMeasureSession: NSObject {
     lastStatus = status
     lastLimitedReason = limitedReason
     lastAimTarget = aimTarget
+    lastFeatureCensus = featureCensus
     lastMm = mm
     lastEmitAt = now
     lastSample = sample
@@ -1955,7 +2139,7 @@ extension ArMeasureSession: ARSessionDelegate {
     // quãng đang có đoạn thẳng SỐNG, là quãng nó phải chạy mỗi khung hình.
     let now = CACurrentMediaTime()
     let probe = probeReticle(now: now)
-    var shouldPublish = refreshAimTarget(now: now, probe: probe)
+    var shouldPublish = refreshAimTarget(now: now, frame: frame, probe: probe)
 
     // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.
     // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit

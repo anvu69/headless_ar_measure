@@ -208,19 +208,64 @@ class ArVideoFormat {
   final int? fps;
 }
 
+/// Đếm điểm đặc trưng thô của MỘT khung hình: tổng, và số nằm quanh tia ngắm.
+///
+/// **Đây là một PHÉP ĐO, không phải một tính năng.** Nó có mặt ở `0.5.0` để trả
+/// lời đúng một câu hỏi đang treo, và nó biến mất cùng lúc câu hỏi ấy được trả
+/// lời: khi tia bắn từ tâm ngắm trượt LIÊN TỤC — bàn gỗ phủ tấm lót chuột đen
+/// phẳng lì, tường trơn, trong nhà buổi tối, cả hai tầng raycast cùng rỗng — thì
+/// quanh tia còn nguyên liệu để tự khớp lấy một mặt phẳng hay không.
+///
+/// Câu hỏi ấy đáng hỏi vì [ArRaycastTarget.estimatedPlane] **về bản chất đã là**
+/// "khớp một mặt phẳng từ điểm đặc trưng quanh tia", và nó trả rỗng. Nếu quanh
+/// tia cũng không có điểm nào thì không có gì để dựng — và một tầng khớp mặt
+/// phẳng tự viết sẽ trả về đúng cái rỗng ấy, chỉ tốn hơn.
+///
+/// Không thứ gì trong đây tham gia vào phép tính khoảng cách, vào tâm ngắm, hay
+/// vào cách một điểm được chấm.
+class ArFeatureCensus {
+  const ArFeatureCensus({this.total, this.nearRay});
+
+  /// Tổng số điểm trong `ARFrame.rawFeaturePoints` của khung hình ấy.
+  ///
+  /// Một mình nó không phân biệt được "phòng trơn" với "đang chĩa vào một mảng
+  /// trơn giữa một phòng đầy vân" — [nearRay] mới tách hai chuyện ấy.
+  final int? total;
+
+  /// Bao nhiêu trong số ấy nằm trong hình nón quanh tia bắn từ tâm màn.
+  ///
+  /// Nửa góc 10° và cửa sổ khoảng cách 0,2–3 m, cả ba chọn theo lập luận chứ
+  /// không theo một phép đo — lập luận nằm ở tầng Swift, cạnh chính các hằng số.
+  /// Nón cố ý rộng hơn hình tâm ngắm, nên đây là một CẬN TRÊN của nguyên liệu:
+  /// số thấp kết luận được ngay, số cao thì chưa chứng minh nguyên liệu nằm
+  /// đúng trên bề mặt đang ngắm.
+  final int? nearRay;
+}
+
 /// Chẩn đoán: điều kiện của mỗi điểm đã chấm, cộng khuôn hình của cả phiên.
 ///
 /// [points] có một mục khi mới chấm điểm đầu, hai mục khi đã đủ hai, và **rỗng**
-/// khi chưa chấm gì mà tầng nền vẫn có chuyện để nói ([video]). Cả khối là
-/// `null` khi tầng nền không nói được gì cả.
+/// khi chưa chấm gì mà tầng nền vẫn có chuyện để nói ([video], [features]). Cả
+/// khối là `null` khi tầng nền không nói được gì cả.
 class ArMeasureDiagnostics {
-  const ArMeasureDiagnostics({required this.points, this.video});
+  const ArMeasureDiagnostics({
+    required this.points,
+    this.video,
+    this.features,
+  });
 
   final List<ArPointDiagnostics> points;
 
   /// Khuôn hình đang chạy. `null` trước lượt `run` đầu tiên, và trên một bản
   /// Swift cũ hơn phép thử ấy.
   final ArVideoFormat? video;
+
+  /// Đếm điểm đặc trưng của khung hình đã sinh ra lượt ngắm gần nhất.
+  ///
+  /// `null` khi phiên không đang ở quãng còn chấm được (không có lượt ngắm nào
+  /// để đếm về), khi ARKit không giao đám mây điểm, và trên một bản Swift cũ
+  /// hơn phép đo này. Xem [ArFeatureCensus].
+  final ArFeatureCensus? features;
 }
 
 /// Máy này chạy được ARKit tới đâu.
@@ -597,15 +642,38 @@ class ArMeasure {
         : const <ArPointDiagnostics>[];
 
     final video = _parseVideoFormat(raw['video']);
+    final features = _parseFeatureCensus(raw['features']);
 
-    // Không có điểm nào VÀ không có khuôn hình nào thì cả khối về `null`, không
-    // phải một đối tượng rỗng: rỗng đọc ra "đã đo và không có gì", còn `null`
-    // đọc đúng nghĩa "bản nền này không nói". Nhưng chỉ một trong hai có mặt là
-    // ĐỦ để khối tồn tại — khuôn hình có nghĩa từ trước khi có điểm nào, và đó
-    // đúng là lúc người ta cần nó.
-    if (points.isEmpty && video == null) return null;
+    // Không có mẩu nào trong ba mẩu thì cả khối về `null`, không phải một đối
+    // tượng rỗng: rỗng đọc ra "đã đo và không có gì", còn `null` đọc đúng nghĩa
+    // "bản nền này không nói". Nhưng chỉ MỘT mẩu có mặt là ĐỦ để khối tồn tại —
+    // khuôn hình và phép đếm vân đều có nghĩa từ trước khi có điểm nào, và đó
+    // đúng là lúc người ta cần chúng.
+    if (points.isEmpty && video == null && features == null) return null;
 
-    return ArMeasureDiagnostics(points: points, video: video);
+    return ArMeasureDiagnostics(
+      points: points,
+      video: video,
+      features: features,
+    );
+  }
+
+  /// Đọc khối đếm điểm đặc trưng. Cùng lối với [_parseVideoFormat]: sai kiểu
+  /// hay thiếu về `null`, và một map hỏng KHÔNG giết cả khối chẩn đoán.
+  ///
+  /// `0` KHÔNG được đổ chung với `null`, và cả phép đo nằm ở chỗ phân biệt hai
+  /// thứ ấy: `0` là "ARKit có đám mây điểm và đám mây rỗng" — một sự thật, và
+  /// là sự thật đóng được quyết định; `null` là "không hỏi được".
+  static ArFeatureCensus? _parseFeatureCensus(Object? raw) {
+    if (raw is! Map) return null;
+
+    final rawTotal = raw['total'];
+    final rawNearRay = raw['nearRay'];
+
+    return ArFeatureCensus(
+      total: rawTotal is num ? rawTotal.round() : null,
+      nearRay: rawNearRay is num ? rawNearRay.round() : null,
+    );
   }
 
   /// Đọc khuôn hình. Mọi trường sai kiểu hay thiếu về `null`, và một map hỏng

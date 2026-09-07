@@ -1,3 +1,69 @@
+## 0.5.0
+
+**This release adds an instrument, not a feature.** Two numbers land in
+`ArMeasureDiagnostics`, they answer one open question, and they are expected to
+be removed once it is answered. Read the question before reading the numbers.
+
+**The question.** A user measuring a wooden table edge — the tabletop covered by
+a flat black mousepad, plain walls, indoors at night — gets `nil` from the
+centre-ray raycast continuously: `.existingPlaneGeometry` and `.estimatedPlane`
+both come back empty. One proposal on the table is to stop using ARKit's raycast
+result and fit a plane directly, with RANSAC over `ARFrame.rawFeaturePoints`.
+Before building that, it is worth knowing whether there is anything to fit —
+because `.estimatedPlane` **is already** "fit a plane to the feature points
+around the ray", and it returns nothing. If there are no points around the ray
+either, a hand-written plane fitter returns the same emptiness at a higher cost,
+and the idea should die here.
+
+Nothing in this package had ever touched `rawFeaturePoints`, `ARPointCloud`, or
+`hitTest(`. This is the first time.
+
+* **`ArMeasureDiagnostics.features`** — an `ArFeatureCensus?` carrying `total`
+  (every point in the current frame's raw cloud) and `nearRay` (how many of them
+  fall inside a cone around the ray cast from screen centre). Both fields are
+  nullable, and the whole block is `null` on any build older than this one.
+  Sampled on the **existing** 10Hz aim grid, in the same pass and from the same
+  `ARFrame` as `aimTarget` — the sentence the census exists to support is "the
+  ray missed, and there were 40 points around it", and that sentence is only
+  true if both halves describe one frame. Current frame only: no history, no
+  accumulation. Accumulating over time is a separate decision, and it is only
+  worth arguing about after the single-frame number has spoken.
+
+* **`0` and `null` are not the same answer, and the whole measurement lives in
+  that distinction.** `0` means ARKit handed over a cloud and the cloud was
+  empty — a fact that closes the question. `null` means nothing was asked.
+
+**The cone: half-angle 10°, range window 0.2–3m.** All three are chosen by
+argument, not measured. A cone rather than a cylinder because the crosshair has
+a fixed size *on screen*, so "around the ray" is an angular neighbourhood, not a
+metric one. Deliberately **wider than the crosshair itself** (which subtends
+under 5°): a plane fit does not need points under the crosshair, it needs points
+on the same nearby surface, and a cone narrow enough to restate what
+`.estimatedPlane` already said would answer nothing. 10° in particular is what
+makes a **zero** decisive — with a narrow cone, zero could just mean the material
+sat at 6°. The price of that width is stated plainly: at the far end of the
+window the cone spans over a metre across, so a **high** count does not yet prove
+the material lies on the aimed surface. Low counts conclude; high counts only
+mean "not ruled out". The range window exists because a cone from the camera is
+infinite — without a far cut, "around the ray" quietly becomes "somewhere in this
+direction", and in a room the far wall wins the count. The near cut is about
+triangulation quality, not geometry: raw feature points are triangulated over
+time, and at very short baselines their coordinates are mostly noise.
+
+**The cost, stated up front: the samples channel no longer goes quiet while the
+user is aiming.** The census had to join the emit coalescer, because in the exact
+scene under investigation `status`, `limitedReason`, `aimTarget` and `mm` are all
+frozen, so `publish` would never fire and the new numbers would never reach Dart
+at the one moment they were built to describe. Unlike `aimTarget`, the census
+changes on nearly every sample. The 10Hz ceiling from `aimProbeIntervalSeconds`
+still holds and cannot be exceeded, but the floor is gone: while `ready` or
+`firstPointPlaced`, expect up to ten samples per second instead of silence. That
+is the price of a measurement build, and it leaves when the measurement does.
+
+**Nothing else changed.** No RANSAC, no new scoring, no change to raycasting,
+placement, distance, or the crosshair. The numbers decide whether any of that
+gets built.
+
 ## 0.4.1
 
 Documentation only. **No behaviour change**: the video format selection, the
