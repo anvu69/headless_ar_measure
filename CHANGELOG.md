@@ -1,4 +1,4 @@
-## Unreleased
+## 0.1.0
 
 A tile edge measured 382mm against a true 400 (−4.5%); two tiles measured 795
 against 800 (−0.6%). Sixteen agents went looking for the cause and came back
@@ -35,7 +35,7 @@ machine did.
   package. Sitting next to a block of real measured numbers, a bare `false`
   reads exactly like a computation that ran and returned false.
 
-## Earlier in Unreleased — second device run
+### Second device run
 
 Second run on real hardware (iPhone 16 Plus): the camera works, the coaching
 overlay samples the room, the session reports `ready` — and the Place button
@@ -82,7 +82,7 @@ was missing every time, correctly, with nothing on screen saying so.
   distant wall it returns somewhere along an extended floor. A number that
   looks ordinary and is wrong is this package's worst failure mode.
 
-## Earlier in Unreleased — first device run
+### First device run
 
 First run on real hardware (iPhone 16 Plus), and four things it turned up.
 
@@ -115,7 +115,7 @@ First run on real hardware (iPhone 16 Plus), and four things it turned up.
   wired into the plugin's registry, and a nil there would silence the whole
   sample stream with no error.
 
-## 0.1.0
+### The surface itself
 
 First release.
 
