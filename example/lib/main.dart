@@ -25,7 +25,7 @@ class _MeasureScreenState extends State<MeasureScreen> {
   ArMeasureController? _controller;
   ArMeasureSample? _sample;
   StreamSubscription<ArMeasureSample>? _sub;
-  bool _lastPlaceMissed = false;
+  ArMeasurePlaceResult? _lastPlace;
 
   @override
   void initState() {
@@ -50,9 +50,23 @@ class _MeasureScreenState extends State<MeasureScreen> {
   }
 
   Future<void> _place() async {
-    final ok = await _controller?.placePoint() ?? false;
-    if (mounted) setState(() => _lastPlaceMissed = !ok);
+    final result =
+        await _controller?.placePoint() ?? ArMeasurePlaceResult.notReady;
+    if (mounted) setState(() => _lastPlace = result);
   }
+
+  /// Three of the four results mean "no point was placed" — and each one asks
+  /// the user for something different. A single boolean would collapse them
+  /// into one sentence that is wrong two times out of three.
+  static String? _placeAdvice(ArMeasurePlaceResult? result) => switch (result) {
+    null || ArMeasurePlaceResult.placed => null,
+    ArMeasurePlaceResult.missed =>
+      'nothing under the crosshair — move slowly around the object '
+          'until it locks',
+    ArMeasurePlaceResult.notReady => 'not ready yet — see the status above',
+    ArMeasurePlaceResult.alreadyComplete =>
+      'both points are down — read the number, or undo',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -81,6 +95,8 @@ class _MeasureScreenState extends State<MeasureScreen> {
   Widget _measuring() {
     final sample = _sample;
     final measurement = sample?.measurement;
+    final locked = sample?.aimLocked ?? false;
+    final advice = _placeAdvice(_lastPlace);
 
     return Stack(
       fit: StackFit.expand,
@@ -101,12 +117,21 @@ class _MeasureScreenState extends State<MeasureScreen> {
               if (measurement != null)
                 '${measurement.mm.toStringAsFixed(0)} mm '
                     '± ${measurement.tolMm.toStringAsFixed(0)}',
-              if (_lastPlaceMissed) 'last tap hit nothing — aim at a surface',
+              ?advice,
             ].join('\n'),
             style: const TextStyle(color: Colors.white, fontSize: 16),
           ),
         ),
-        const Center(child: Icon(Icons.add, color: Colors.white, size: 32)),
+        // The crosshair says what the button is about to do. Without it, a
+        // tap that misses is indistinguishable from a dead button — which is
+        // exactly how it read on a real device, aimed at a glossy screen.
+        Center(
+          child: Icon(
+            locked ? Icons.add_circle_outline : Icons.add,
+            color: locked ? Colors.greenAccent : Colors.white54,
+            size: locked ? 44 : 32,
+          ),
+        ),
         Positioned(
           left: 8,
           right: 8,

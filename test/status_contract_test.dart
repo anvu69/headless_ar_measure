@@ -37,6 +37,20 @@ void main() {
           'bị parseSample bỏ về null, và màn mất cách nói đúng câu',
     );
   });
+
+  // Cùng một cái bẫy: `placePoint` trả `rawValue` của enum Swift, và Dart so
+  // chuỗi bằng tay. Lệch một chữ thì MỌI cú chấm — kể cả cú chấm thành công —
+  // về `notReady`, và không có lỗi nào nổ: nút vẫn bấm được, điểm vẫn rơi
+  // xuống, chỉ có câu trên màn là sai.
+  test('bốn chuỗi kết quả chấm điểm khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArMeasurePlaceResult'),
+      ArMeasurePlaceResult.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArMeasurePlaceResult bên Swift và bên Dart đã lệch — mọi kết '
+          'quả chấm điểm rơi về notReady, kể cả lúc điểm đã đặt xong',
+    );
+  });
 }
 
 /// Trích tên các `case` của một `enum <tên>: String` trong mã Swift.

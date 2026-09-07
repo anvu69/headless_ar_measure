@@ -39,6 +39,29 @@ enum ArMeasureLimitedReason: String {
   case insufficientFeatures
 }
 
+/// Chuyện gì đã xảy ra với một lời gọi `placePoint`.
+///
+/// Bản trước trả `Bool`, và trên máy thật cái `false` ấy hoá ra là một cái nút
+/// không làm gì: người dùng chĩa vào màn iPad đen bóng, bấm, và không có điểm,
+/// không có thông báo, không có gì. `false` đúng — nhưng nó gộp ba chuyện có ba
+/// lời khuyên NGƯỢC nhau vào một giá trị, nên màn không có câu nào để nói:
+///
+/// * [missed] — "rê máy chậm quanh vật cho tới khi tâm ngắm khoá lại"
+/// * [notReady] — "chờ, phiên chưa bám được" (chính trạng thái đang bắn ra nói
+///   nốt phần còn lại)
+/// * [alreadyComplete] — "đã đủ hai điểm, bấm Chốt hoặc Hoàn tác"
+///
+/// `rawValue` **LÀ** hợp đồng, y như `ArMeasureStatus`: `ArMeasureController`
+/// bên Dart so chuỗi bằng tay, và một chuỗi lạ rơi về `notReady` — tức là một
+/// cú chấm THÀNH CÔNG cũng bị báo là chưa sẵn sàng, không lỗi nào nổ.
+/// `test/status_contract_test.dart` canh cả bốn.
+enum ArMeasurePlaceResult: String {
+  case placed
+  case missed
+  case notReady
+  case alreadyComplete
+}
+
 /// Đường ra của một phiên: một map đã sẵn sàng cho `EventChannel`.
 ///
 /// Là protocol chứ không phải closure để phía nhận giữ được **yếu**. Một
@@ -276,6 +299,43 @@ final class ArMeasureSession: NSObject {
   /// còn chịu đứng nhìn màn hình mờ; lâu hơn thì họ đã tự bấm đo lại rồi.
   private static let relocalizationDeadlineSeconds: TimeInterval = 5
 
+  // MARK: - Nhịp dò tâm ngắm
+
+  /// Bao lâu bắn một tia thăm dò cho tâm ngắm.
+  ///
+  /// Lượt dò này KHÔNG dùng chung nhịp với [minIntervalSeconds] vì hai thứ
+  /// khác hẳn nhau về giá: bắn một mẫu là ghép một dictionary rồi đẩy qua kênh,
+  /// còn dò là chạy tới hai `ARRaycastQuery` thật — một lượt cắt hình học mặt
+  /// phẳng đã dò ra, rồi (nếu trượt) một lượt khớp mặt phẳng ước lượng quanh
+  /// tia.
+  ///
+  /// Chọn 10 Hz, không phải 60 Hz theo khung hình:
+  ///
+  /// * Thứ dò ra là một **giá trị boolean**. Mắt người không phân biệt nổi hai
+  ///   lần đổi cách nhau dưới 100 ms, nên 60 Hz mua đúng 0 phần thông tin.
+  /// * Nó nằm dưới nhịp bắn 15 Hz đã chốt, nên cờ này KHÔNG BAO GIỜ là thứ làm
+  ///   nghẽn kênh: nó bắn được nhiều nhất 10 lần/giây, và thực tế còn ít hơn
+  ///   nhiều vì chỉ ĐỔI cờ mới bắn.
+  /// * Ngân sách mỗi khung hình còn lại nguyên cho đường tính số đo, đường
+  ///   BẮT BUỘC phải chạy đúng nhịp khung hình.
+  ///
+  /// Chưa đo được trên máy thật ở lượt này — con số chọn theo lập luận trên chứ
+  /// không theo một phép đo. Nếu máy thật cho thấy 10 Hz vẫn nặng thì chỗ phải
+  /// sửa là đúng hằng số này, không phải cấu trúc quanh nó.
+  private static let aimProbeIntervalSeconds: TimeInterval = 1.0 / 10.0
+
+  /// Trượt liên tiếp bao lâu thì mới HẠ cờ ngắm.
+  ///
+  /// Bất đối xứng có chủ đích: khoá thì khoá ngay ở lượt dò trúng đầu tiên,
+  /// nhưng mở khoá thì phải trượt suốt quãng này. Không có nó, một bề mặt ở
+  /// ranh giới (mép giấy, vân gỗ mờ) cho ra một chuỗi trúng-trượt-trúng và tâm
+  /// ngắm **nhấp nháy 10 lần một giây** — khó đọc hơn hẳn một tâm ngắm đứng yên
+  /// ở một trong hai hình.
+  ///
+  /// 0,3 s là ba lượt dò trượt liên tiếp, và nằm dưới quãng phản xạ của người
+  /// (~0,4 s) nên nó không làm chậm được cú bấm nào.
+  private static let aimUnlockGraceSeconds: TimeInterval = 0.3
+
   // MARK: - Trạng thái
 
   /// Hai điểm đã chấm, theo thứ tự chấm. Nhiều nhất hai.
@@ -308,8 +368,21 @@ final class ArMeasureSession: NSObject {
   private var relocalizationWatch: DispatchWorkItem?
   private var trailingEmit: DispatchWorkItem?
 
+  /// Tia bắn từ tâm ngắm ĐANG trúng một bề mặt hay không.
+  ///
+  /// Đây là thứ duy nhất nói trước cho người dùng biết cú bấm sắp tới sẽ đặt
+  /// được điểm hay rơi vào chỗ trống. Xem [refreshAimLock].
+  private var aimLocked = false
+
+  /// Lần dò gần nhất TRÚNG, để tính quãng ân hạn khi hạ cờ.
+  private var lastAimHitAt: TimeInterval = 0
+
+  /// Lần dò gần nhất CHẠY, để giãn nhịp dò.
+  private var lastAimProbeAt: TimeInterval = 0
+
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
+  private var lastAimLocked: Bool?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
 
@@ -546,9 +619,9 @@ final class ArMeasureSession: NSObject {
 
   /// Chấm một điểm tại con trỏ giữa màn.
   ///
-  /// Trả `false` khi **không có điểm nào được đặt**: raycast trượt (chĩa vào
-  /// trời, vào mặt kính, vào chỗ chưa có đủ điểm đặc trưng), hoặc phiên đang ở
-  /// trạng thái không cho chấm, hoặc đã đủ hai điểm.
+  /// Trả **lý do** chứ không phải một `Bool`, vì cả ba đường "không đặt được
+  /// điểm nào" đều có một câu khác nhau để nói với người dùng — xem
+  /// [ArMeasurePlaceResult].
   ///
   /// Vì sao là giá trị trả về chứ không phải một trạng thái bắn ra: raycast
   /// trượt **không đổi trạng thái gì cả** — phiên vẫn `ready`, vẫn đúng như một
@@ -556,12 +629,21 @@ final class ArMeasureSession: NSObject {
   /// tin không phân biệt được với một lần bám lại bình thường, và tầng Dart
   /// không có cách nào tách hai chuyện ấy. Giá trị trả về đi thẳng về đúng cú
   /// chạm đã gây ra nó, nên app rung/nháy được ngay tại chỗ.
-  func placePoint() -> Bool {
-    guard !isStopped else { return false }
+  func placePoint() -> ArMeasurePlaceResult {
+    guard !isStopped else { return .notReady }
+
+    // Thứ tự ba lượt kiểm dưới đây LÀ hợp đồng, vì mỗi lượt sinh ra một lời
+    // khuyên khác nhau và chỉ đúng một lời khuyên được nói ra.
+    //
+    // "Đã đủ hai điểm" đi TRƯỚC "chưa sẵn sàng": khi đã có hai điểm thì việc
+    // phải làm là Chốt hoặc Hoàn tác, và câu ấy đúng bất kể ARKit đang bám tốt
+    // hay đang rung. Đảo lại thì nửa giây rung tay biến "đã đo xong" thành
+    // "chờ phiên bám lại", và người dùng ngồi đợi một thứ đã tới từ lâu.
+    guard anchors.count < 2 else { return .alreadyComplete }
 
     let status = currentStatus()
-    guard status == .ready || status == .firstPointPlaced else { return false }
-    guard let transform = raycastFromReticle() else { return false }
+    guard status == .ready || status == .firstPointPlaced else { return .notReady }
+    guard let transform = raycastFromReticle() else { return .missed }
 
     // `ARAnchor` chứ không phải `simd_float3` thuần — nhưng KHÔNG phải vì
     // anchor tự đi theo lượt tinh chỉnh. Nó không hứa thế: `transform` là
@@ -579,7 +661,7 @@ final class ArMeasureSession: NSObject {
     sceneView.session.add(anchor: anchor)
 
     publish(force: true)
-    return true
+    return .placed
   }
 
   /// Bỏ điểm chấm gần nhất. Không có điểm nào thì không làm gì.
@@ -669,6 +751,52 @@ final class ArMeasureSession: NSObject {
       }
     }
     return nil
+  }
+
+  // MARK: - Tâm ngắm
+
+  /// Dò xem tia từ tâm ngắm có trúng gì không, và cập nhật [aimLocked].
+  ///
+  /// Trả `true` khi cờ ĐỔI — người gọi dùng nó để khỏi bắn khi không có gì mới.
+  ///
+  /// Vì sao lớp này cần một lượt dò riêng, tách khỏi lúc bấm: máy thật báo về
+  /// một cái nút không làm gì. Người dùng chĩa vào màn iPad đen bóng ở cự ly
+  /// gần — bề mặt tệ nhất có thể cho ARKit, phản chiếu và gần như không có điểm
+  /// đặc trưng — bấm "Chấm điểm", và không có điểm, không thông báo, không rung.
+  /// Tia trượt THẬT, nhưng người dùng không có đường nào biết được chuyện đó:
+  /// họ chỉ thấy một cái nút chết. App Measure của Apple giải đúng bài này bằng
+  /// cách cho con trỏ tự nói — nó đổi hình khi bắt được bề mặt, và người ta rê
+  /// máy tới khi nó khoá rồi mới bấm.
+  ///
+  /// Dò bằng ĐÚNG [raycastFromReticle] mà [placePoint] dùng, không phải một tia
+  /// gần giống. Cờ này là một lời hứa về cú bấm sắp tới; hai tia khác nhau là
+  /// một lời hứa hão, và nó hỏng theo đúng kiểu tệ nhất — tâm ngắm khoá lại,
+  /// người dùng bấm, không có gì xảy ra.
+  private func refreshAimLock(now: TimeInterval) -> Bool {
+    let was = aimLocked
+
+    // Ngoài hai trạng thái còn chấm được thì cú bấm tới không đặt nổi điểm nào
+    // dù tia có trúng hay không — kể cả khi đã đủ hai điểm, lúc mà cờ này hết
+    // sạch ý nghĩa. Hạ cờ, và KHÔNG dò: một lượt raycast ở đây là công đổ đi.
+    let status = currentStatus()
+    guard status == .ready || status == .firstPointPlaced else {
+      aimLocked = false
+      lastAimHitAt = 0
+      return was != aimLocked
+    }
+
+    guard now - lastAimProbeAt >= Self.aimProbeIntervalSeconds else { return false }
+    lastAimProbeAt = now
+
+    if raycastFromReticle() != nil {
+      lastAimHitAt = now
+      aimLocked = true
+    } else if now - lastAimHitAt >= Self.aimUnlockGraceSeconds {
+      // Trượt một lượt chưa đủ để hạ cờ — xem [aimUnlockGraceSeconds].
+      aimLocked = false
+    }
+
+    return was != aimLocked
   }
 
   // MARK: - Trạng thái và số đo
@@ -789,12 +917,31 @@ final class ArMeasureSession: NSObject {
     // thì hai điểm vẫn còn đó, nhưng khoảng cách giữa chúng đã không còn nghĩa
     // — spec gọi đây là "che con số đang trôi".
     let mm = status == .measured ? currentDistanceMm() : nil
+
+    // Cờ ngắm chỉ có nghĩa ở hai trạng thái còn chấm được, và hai điểm đã đủ
+    // thì nó hết nghĩa hẳn. [refreshAimLock] đã hạ cờ ở mọi trạng thái khác,
+    // nhưng nó chỉ chạy khi CÓ khung hình — mà `publish` còn được gọi từ những
+    // đường không có khung hình nào (lỗi phiên, `pause`, mất quyền camera).
+    // Chặn thêm một lượt ở đây thì không còn đường nào để một cờ cũ lọt ra
+    // ngoài kênh.
+    let aimLocked = (status == .ready || status == .firstPointPlaced) && self.aimLocked
     let now = CACurrentMediaTime()
 
-    // `limitedReason` nằm trong điều kiện gộp cùng `status`: đổi từ "rê quá
-    // nhanh" sang "thiếu vân" mà không đổi trạng thái là đổi hẳn câu màn phải
-    // nói, nên nó không được rơi vào nhánh nén.
-    if !force, status == lastStatus, limitedReason == lastLimitedReason {
+    // `limitedReason` và `aimLocked` nằm trong điều kiện gộp cùng `status`, và
+    // cả hai vì cùng một lý do: bộ nén ở dưới neo vào "số đo đổi quá 0,5 mm",
+    // mà cả hai khoá này đổi ĐƯỢC trong khi số đo không đổi một chút nào.
+    //
+    // Với `aimLocked` thì còn mạnh hơn thế: lúc nó đổi, phần lớn thời gian
+    // **chưa có điểm nào**, nên `mm` là `nil` và nhánh dưới `return` thẳng.
+    // Không đưa nó lên đây thì lượt khoá đầu tiên — đúng cái tín hiệu bảo người
+    // dùng bấm được rồi — bị nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói.
+    //
+    // Cái giá là cờ đổi thì bỏ qua cả nhịp 15 Hz. Chấp nhận được vì trần đã bị
+    // chặn từ chỗ khác: lượt dò chỉ chạy 10 Hz, và quãng ân hạn khi hạ cờ
+    // (0,3 s) kéo trần một chu kỳ khoá-mở xuống dưới 7 lần/giây.
+    if !force, status == lastStatus, limitedReason == lastLimitedReason,
+      aimLocked == lastAimLocked
+    {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
 
@@ -833,6 +980,12 @@ final class ArMeasureSession: NSObject {
     if failure != nil, !failureIsRecoverable {
       sample["recoverable"] = false
     }
+    // Cùng lối với `recoverable`, ngược chiều: chỉ gửi khi TRUE. Thiếu khoá
+    // nghĩa là "chưa bám" — đúng mặc định bên Dart, đúng hình tâm ngắm an toàn
+    // (rỗng, còn phải rê tiếp), và đúng hành vi của mọi bản trước khoá này.
+    if aimLocked {
+      sample["aimLocked"] = true
+    }
     if let mm {
       sample["mm"] = mm
       sample["tolMm"] = toleranceMm(forMm: mm)
@@ -843,6 +996,7 @@ final class ArMeasureSession: NSObject {
 
     lastStatus = status
     lastLimitedReason = limitedReason
+    lastAimLocked = aimLocked
     lastMm = mm
     lastEmitAt = now
     lastSample = sample
@@ -1023,15 +1177,31 @@ extension ArMeasureSession: ARSessionDelegate {
   ///
   /// Đây KHÔNG phải một cái vòi 60 Hz: [publish] gọi không ép buộc, nên ngưỡng
   /// 0,5 mm và nhịp 15 Hz (kèm phát bù) vẫn nén y như trước.
+  ///
+  /// Nó cũng là nguồn kích hoạt của lượt dò tâm ngắm, và đó là một lượt SỬA:
+  /// bản trước chặn sớm ngay dòng đầu bằng `guard anchors.count == 2`.
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
-    // Dưới hai điểm thì không có gì trong mẫu đổi được theo khung hình: trạng
-    // thái chỉ phụ thuộc `trackingState`, `failure`, hai cờ pause/interrupt và
-    // SỐ điểm — không thứ nào đi qua đây. Chặn sớm để khung hình không kéo theo
-    // một lượt tính vô ích nào lúc người dùng còn chưa chấm xong.
-    guard anchors.count == 2 else { return }
+    // Lượt dò chạy TRƯỚC, và chạy cả khi chưa có điểm nào.
+    //
+    // Lời chặn sớm cũ đúng với giả định của nó: dưới hai điểm thì không có gì
+    // trong mẫu đổi được theo khung hình, vì trạng thái chỉ phụ thuộc
+    // `trackingState`, `failure`, hai cờ pause/interrupt và SỐ điểm — không thứ
+    // nào đi qua đây. Cờ ngắm phá đúng giả định ấy: nó CHỈ đổi theo khung hình,
+    // và nó chỉ có nghĩa ở đúng cái quãng mà lời chặn cũ cắt bỏ — lúc người
+    // dùng đang ngắm điểm đầu tiên.
+    //
+    // [refreshAimLock] tự giãn nhịp xuống 10 Hz và tự bỏ qua khi trạng thái
+    // không cho chấm, nên đây không phải một lượt raycast mỗi khung hình.
+    var shouldPublish = refreshAimLock(now: CACurrentMediaTime())
+
+    // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.
     // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit
     // giao khung mới. Chỉ hai `ARAnchor` được lấy ra, và chúng không giữ khung.
-    guard adoptUpdatedAnchors(frame.anchors) else { return }
+    if anchors.count == 2, adoptUpdatedAnchors(frame.anchors) {
+      shouldPublish = true
+    }
+
+    guard shouldPublish else { return }
     publish()
   }
 

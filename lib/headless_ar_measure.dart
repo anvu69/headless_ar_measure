@@ -34,6 +34,39 @@ enum ArMeasureLimitedReason {
   insufficientFeatures,
 }
 
+/// Chuyện gì đã xảy ra với một lời gọi [ArMeasureController.placePoint].
+///
+/// Ba trong bốn giá trị đều là "không có điểm nào được đặt", và chúng tách nhau
+/// ra vì ba lời khuyên đi kèm **ngược nhau**. Một `bool` gộp cả ba lại thì màn
+/// chỉ còn một câu để nói và sai hai phần ba số lần.
+enum ArMeasurePlaceResult {
+  /// Điểm đã đặt.
+  placed,
+
+  /// Tia bắn ra không trúng gì.
+  ///
+  /// Câu đúng: **rê máy chậm quanh vật cho tới khi tâm ngắm khoá lại**. Kèm
+  /// theo [ArMeasureSample.aimLocked], đây là đường duy nhất để một cú bấm
+  /// trượt không trông giống một cái nút hỏng.
+  missed,
+
+  /// Phiên đang ở trạng thái không cho chấm.
+  ///
+  /// Câu đúng nằm ở chính [ArMeasureSample.status] đang bắn ra — đang khởi
+  /// động, đang cần rê máy, đang gián đoạn, hay mất quyền camera.
+  ///
+  /// Cũng là giá trị trả về khi kênh không nói được gì: thiếu plugin, view đã
+  /// chết, hoặc một bản Swift cũ trả về một kiểu khác. Không phải [missed] —
+  /// mời người dùng rê máy để cứu một kênh đã chết là bắt họ rê mãi mãi.
+  notReady,
+
+  /// Đã đủ hai điểm rồi.
+  ///
+  /// Câu đúng: **đã đủ hai điểm, bấm Chốt hoặc Hoàn tác**. Giá trị này đi trước
+  /// [notReady]: hai điểm đã nằm đó thì câu ấy đúng kể cả lúc ARKit đang rung.
+  alreadyComplete,
+}
+
 /// Một số đo khoảng cách.
 class ArMeasurement {
   const ArMeasurement({
@@ -73,6 +106,7 @@ class ArMeasureSample {
     this.measurement,
     this.limitedReason,
     this.recoverable = true,
+    this.aimLocked = false,
   });
 
   final ArMeasureStatus status;
@@ -97,6 +131,27 @@ class ArMeasureSample {
   /// Mặc định `true`: thiếu khoá thì coi như còn gỡ được, vì đó là dạng hỏng
   /// phổ biến hơn hẳn và cũng là hành vi của mọi bản trước khoá này.
   final bool recoverable;
+
+  /// Tia bắn từ tâm màn ĐANG trúng một bề mặt hay không.
+  ///
+  /// Nói cách khác: bấm ngay bây giờ thì có đặt được điểm không. Đây là thứ
+  /// duy nhất trong cả gói nói được chuyện đó **trước** cú bấm, và nó tồn tại
+  /// vì một lượt chạy trên máy thật: chĩa vào một màn iPad đen bóng ở cự ly
+  /// gần — phản chiếu, không vân, gần như không có điểm đặc trưng — thì
+  /// [ArMeasureController.placePoint] trượt thật, nhưng người dùng chỉ thấy
+  /// một cái nút không làm gì.
+  ///
+  /// Dùng nó để đổi hình tâm ngắm, y như app Measure của Apple: người ta rê
+  /// máy tới khi con trỏ khoá lại rồi mới bấm.
+  ///
+  /// Chỉ có nghĩa khi [status] là [ArMeasureStatus.ready] hoặc
+  /// [ArMeasureStatus.firstPointPlaced]. Ở mọi trạng thái khác — kể cả
+  /// [ArMeasureStatus.measured], lúc đã đủ hai điểm và không còn gì để chấm —
+  /// nó luôn `false`.
+  ///
+  /// Mặc định `false`: thiếu khoá nghĩa là chưa bám, tức là hình tâm ngắm an
+  /// toàn (rỗng, còn phải rê tiếp).
+  final bool aimLocked;
 }
 
 /// Cửa vào duy nhất tới phiên đo AR.
@@ -215,14 +270,32 @@ class ArMeasure {
     };
     final rawRecoverable = raw['recoverable'];
     final recoverable = rawRecoverable is bool ? rawRecoverable : true;
+    final rawAimLocked = raw['aimLocked'];
+    final aimLocked = rawAimLocked is bool ? rawAimLocked : false;
 
     return ArMeasureSample(
       status: status,
       measurement: measurement,
       limitedReason: limitedReason,
       recoverable: recoverable,
+      aimLocked: aimLocked,
     );
   }
+}
+
+/// Đọc kết quả `placePoint` từ chuỗi tầng nền trả về.
+///
+/// Không đọc được — `null`, sai kiểu, hay một chuỗi lạ từ một bản Swift lệch
+/// pha — thì về [ArMeasurePlaceResult.notReady] chứ không ném: đây là giá trị
+/// trả về của một cú chạm, và ném ở đây thì cái nút thành cái nút nổ.
+ArMeasurePlaceResult _parsePlaceResult(Object? raw) {
+  return switch (raw) {
+    'placed' => ArMeasurePlaceResult.placed,
+    'missed' => ArMeasurePlaceResult.missed,
+    'notReady' => ArMeasurePlaceResult.notReady,
+    'alreadyComplete' => ArMeasurePlaceResult.alreadyComplete,
+    _ => ArMeasurePlaceResult.notReady,
+  };
 }
 
 /// Các lệnh gửi tới đúng một platform view.
@@ -241,9 +314,10 @@ class ArMeasureController {
 
   /// Chấm một điểm tại con trỏ giữa màn.
   ///
-  /// Trả `false` khi **không có điểm nào được đặt**: tia bắn ra trượt (chĩa vào
-  /// trời, vào mặt kính, vào chỗ ARKit chưa dựng nổi hình học), phiên đang ở
-  /// trạng thái không cho chấm, hoặc đã đủ hai điểm.
+  /// Trả **lý do** chứ không phải một `bool`, vì cả ba đường "không đặt được
+  /// điểm nào" đều cần một câu khác nhau nói với người dùng — xem
+  /// [ArMeasurePlaceResult]. Không bao giờ ném: một kênh chết cũng ra
+  /// [ArMeasurePlaceResult.notReady].
   ///
   /// Vì sao là giá trị trả về chứ không phải một trạng thái bắn ra trên luồng
   /// [ArMeasure.samples]: chấm trượt **không đổi trạng thái gì cả** — phiên vẫn
@@ -251,14 +325,17 @@ class ArMeasureController {
   /// trượt" là gửi một tin không phân biệt được với một lần bám lại bình
   /// thường. Giá trị trả về thì đi thẳng về đúng cú chạm đã gây ra nó, nên
   /// người gọi rung hay nháy được ngay tại chỗ.
-  Future<bool> placePoint() async {
+  ///
+  /// Đừng để đây là chỗ ĐẦU TIÊN người dùng biết mình đang ngắm vào chỗ trống:
+  /// [ArMeasureSample.aimLocked] nói chuyện đó ra từ trước cú bấm.
+  Future<ArMeasurePlaceResult> placePoint() async {
     try {
-      final ok = await ArMeasure._method.invokeMethod<bool>('placePoint', {
+      final raw = await ArMeasure._method.invokeMethod<String>('placePoint', {
         'viewId': viewId,
       });
-      return ok ?? false;
+      return _parsePlaceResult(raw);
     } catch (_) {
-      return false;
+      return ArMeasurePlaceResult.notReady;
     }
   }
 

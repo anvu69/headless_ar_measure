@@ -73,10 +73,11 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       result(Self.availability())
 
     case "placePoint":
-      // Giá trị canh gác của `placePoint` là `false`, không phải `nil`: cả
-      // "trượt" lẫn "không tìm thấy view" đều nghĩa là KHÔNG CÓ ĐIỂM NÀO ĐƯỢC
-      // ĐẶT, và đó đúng là thứ app cần biết.
-      result(session(for: call)?.placePoint() ?? false)
+      // Giá trị canh gác là `.notReady`, KHÔNG phải `.missed`: không tìm thấy
+      // view nghĩa là không có phiên nào — và lời khuyên đi kèm `.missed` ("rê
+      // máy quanh vật cho tới khi tâm ngắm khoá lại") mời người dùng rê máy cả
+      // ngày cho một kênh đã chết. "Chưa chấm được" thì đúng ở cả hai đường.
+      result((session(for: call)?.placePoint() ?? .notReady).rawValue)
 
     case "undoPoint":
       session(for: call)?.undoPoint()

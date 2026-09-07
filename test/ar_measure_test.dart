@@ -148,6 +148,39 @@ void main() {
         isTrue,
       );
     });
+
+    // Cờ ngắm là thứ DUY NHẤT nói cho người dùng biết cú bấm sắp tới có trúng
+    // gì không. Máy thật báo về: bấm "Chấm điểm" chĩa vào màn iPad đen bóng thì
+    // KHÔNG có gì xảy ra — không điểm, không thông báo — vì tia trượt thật mà
+    // nút thì không có cách nào nói ra trước.
+    test('aimLocked đọc được khi tầng nền báo tâm ngắm đã bám', () {
+      final s = ArMeasure.parseSample({'status': 'ready', 'aimLocked': true});
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimLocked, isTrue);
+    });
+
+    // Tầng nền chỉ gửi khoá này khi TRUE — thiếu nghĩa là chưa bám, đúng cái
+    // mặc định an toàn: màn vẽ tâm ngắm rỗng và người dùng còn phải rê tiếp.
+    test('thiếu aimLocked thì mặc định false, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({'status': 'ready'});
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimLocked, isFalse);
+    });
+
+    test('aimLocked sai kiểu không ném, về false', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimLocked': 'not-a-bool',
+        });
+      }, returnsNormally);
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimLocked, isFalse);
+    });
   });
 
   group('isAvailable', () {
@@ -175,7 +208,7 @@ void main() {
             const MethodChannel(ArMeasure.methodChannelName),
             (call) async {
               calls.add(call);
-              return call.method == 'placePoint' ? true : null;
+              return call.method == 'placePoint' ? 'placed' : null;
             },
           );
     });
@@ -214,23 +247,62 @@ void main() {
       }
     });
 
-    test('placePoint trả về đúng cái nền tảng nói', () async {
-      expect(await const ArMeasureController(1).placePoint(), isTrue);
+    // Bốn kết quả, và ba trong bốn là "không có điểm nào đặt" vì ba lý do KHÁC
+    // NHAU. Một `bool` gộp cả ba lại thành một câu duy nhất, mà ba lời khuyên
+    // đúng thì ngược nhau: rê máy tìm bề mặt, chờ phiên bám lại, hay bấm Chốt.
+    test('placePoint đọc được cả bốn kết quả tầng nền nói', () async {
+      Future<ArMeasurePlaceResult> place(Object? reply) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              (call) async => reply,
+            );
+        return const ArMeasureController(1).placePoint();
+      }
+
+      expect(await place('placed'), ArMeasurePlaceResult.placed);
+      expect(await place('missed'), ArMeasurePlaceResult.missed);
+      expect(await place('notReady'), ArMeasurePlaceResult.notReady);
+      expect(
+        await place('alreadyComplete'),
+        ArMeasurePlaceResult.alreadyComplete,
+      );
     });
 
-    // Nền tảng trả null (vd. một bản Swift cũ chưa có giá trị trả về) không
-    // được thành "đã chấm được": mặc định phải là KHÔNG có điểm nào đặt.
-    test('placePoint trả null thì thành false', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-            const MethodChannel(ArMeasure.methodChannelName),
-            (call) async => null,
-          );
+    // Nền tảng trả null (vd. một bản Swift cũ chỉ biết trả `bool`), trả một
+    // chuỗi lạ, hoặc không có plugin nào để trả: cả ba đều là KHÔNG có điểm nào
+    // đặt, và lời khuyên duy nhất không sai ở đó là "chưa chấm được" — chứ
+    // không phải "rê máy tìm bề mặt", vì rê cả ngày cũng không cứu một kênh
+    // chết.
+    test('placePoint không đọc được thì về notReady, không ném', () async {
+      Future<ArMeasurePlaceResult> place(
+        Future<Object?> Function(MethodCall) handler,
+      ) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              handler,
+            );
+        return const ArMeasureController(1).placePoint();
+      }
 
-      expect(await const ArMeasureController(1).placePoint(), isFalse);
+      expect(await place((_) async => null), ArMeasurePlaceResult.notReady);
+      expect(
+        await place((_) async => 'sao chổi'),
+        ArMeasurePlaceResult.notReady,
+      );
+      expect(await place((_) async => true), ArMeasurePlaceResult.notReady);
+      expect(
+        await place((_) async => throw MissingPluginException()),
+        ArMeasurePlaceResult.notReady,
+      );
+      expect(
+        await place((_) async => throw PlatformException(code: 'boom')),
+        ArMeasurePlaceResult.notReady,
+      );
     });
 
-    test('thiếu plugin: placePoint trả false, lệnh khác không ném', () async {
+    test('thiếu plugin: lệnh khác không ném', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(
             const MethodChannel(ArMeasure.methodChannelName),
@@ -238,7 +310,6 @@ void main() {
           );
 
       const c = ArMeasureController(1);
-      expect(await c.placePoint(), isFalse);
       await expectLater(c.undoPoint(), completes);
       await expectLater(c.reset(), completes);
       await expectLater(c.pause(), completes);
@@ -253,7 +324,6 @@ void main() {
             (call) async => throw PlatformException(code: 'boom'),
           );
 
-      expect(await const ArMeasureController(1).placePoint(), isFalse);
       await expectLater(const ArMeasureController(1).dispose(), completes);
     });
   });

@@ -150,4 +150,144 @@ void main() {
       );
     });
   });
+
+  group('tâm ngắm tự nói', () {
+    test('lượt dò dùng ĐÚNG tia mà placePoint dùng', () {
+      expect(
+        _swiftMethodBody(sessionSource, 'private func refreshAimLock('),
+        contains('raycastFromReticle()'),
+        reason:
+            'Cờ ngắm là một lời hứa về cú bấm SẮP TỚI. Dò bằng một tia khác — '
+            'khác tầng mục tiêu, khác alignment, khác điểm bắn — là hứa một '
+            'đằng làm một nẻo: tâm ngắm khoá lại, người dùng bấm, và không có '
+            'gì xảy ra. Đúng cái hỏng máy thật báo về.',
+      );
+    });
+
+    test('khung hình chạy lượt dò TRƯỚC lối rẽ hai điểm', () {
+      final body = _swiftMethodBody(
+        sessionSource,
+        'func session(_ session: ARSession, didUpdate frame: ARFrame)',
+      );
+
+      expect(
+        body,
+        contains('refreshAimLock('),
+        reason:
+            'Đây là nguồn khung hình duy nhất của lớp. Bản trước chặn sớm bằng '
+            '`guard anchors.count == 2` — tức là ở đúng quãng người dùng còn '
+            'đang ngắm điểm ĐẦU TIÊN thì không có lượt dò nào chạy, và tâm '
+            'ngắm không bao giờ nói được gì.',
+      );
+      expect(
+        body.indexOf('refreshAimLock('),
+        lessThan(body.indexOf('anchors.count == 2')),
+        reason:
+            'Lượt dò phải chạy trước lối rẽ hai điểm. Đặt sau thì nó nằm trong '
+            'nhánh chỉ tới khi đã đo xong — đúng lúc cờ này hết nghĩa.',
+      );
+    });
+
+    test('lượt dò có nhịp RIÊNG, không đi theo nhịp bắn', () {
+      expect(
+        sessionSource,
+        contains('aimProbeIntervalSeconds'),
+        reason:
+            'Raycast là việc thật, không phải đọc một biến. Để nó chạy mỗi '
+            'khung hình là gánh 60 lượt/giây cho một giá trị BOOLEAN mà mắt '
+            'người không đọc nổi quá 10 lần/giây.',
+      );
+    });
+
+    test('cờ ngắm đổi thì KHÔNG bị bộ giãn nhịp nuốt', () {
+      expect(
+        // Gộp khoảng trắng: điều kiện này dài quá một dòng, và chỗ trình định
+        // dạng Swift ngắt dòng không phải thứ ca kiểm này canh.
+        sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        contains(
+          'if !force, status == lastStatus, '
+          'limitedReason == lastLimitedReason, aimLocked == lastAimLocked {',
+        ),
+        reason:
+            'Bộ giãn nhịp neo vào "số đo đổi quá 0,5 mm". Cờ ngắm đổi từ false '
+            'sang true KHÔNG đổi số đo nào — chưa có điểm nào để đo — nên nếu '
+            'nó không nằm trong điều kiện gộp này thì lượt khoá đầu tiên bị '
+            'nuốt trọn, và tâm ngắm câm đúng lúc nó cần nói nhất.',
+      );
+    });
+  });
+
+  group('cấu hình ARKit', () {
+    test('lấy nét tự động đặt tường minh, không trông vào mặc định', () {
+      expect(
+        sessionSource,
+        contains('config.isAutoFocusEnabled = true'),
+        reason:
+            'Tầm đo gần (0,3–1 m) là đúng chỗ một tiêu cự cố định làm ảnh nhoè '
+            'và ARKit mất sạch điểm đặc trưng. Mặc định của Apple hôm nay là '
+            'true, nhưng mặc định không phải hợp đồng.',
+      );
+    });
+
+    test('KHÔNG bật environmentTexturing', () {
+      expect(
+        sessionSource,
+        isNot(contains('config.environmentTexturing =')),
+        reason:
+            'Nó dựng probe ánh sáng cho phản chiếu trên vật ảo. Gói vẽ hai quả '
+            'cầu `.constant` không nhận đèn — không có gì để phản chiếu, và nó '
+            'không đụng gì tới dò mặt phẳng hay raycast. Bật là trả tiền GPU '
+            'cho không.',
+      );
+    });
+
+    test('KHÔNG bật frameSemantics', () {
+      expect(
+        sessionSource,
+        isNot(contains('config.frameSemantics =')),
+        reason:
+            '`.sceneDepth` chỉ mở `ARFrame.sceneDepth` cho app tự đọc — raycast '
+            'của ARKit đã ăn lưới qua `sceneReconstruction`. `.personSegmentation` '
+            'là che khuất người, mà gói không có gì để che. Không cái nào làm '
+            'tia trúng thêm một lần nào.',
+      );
+    });
+
+    test('hai tầng tia, đúng thứ tự, và KHÔNG có tầng mặt phẳng vô hạn', () {
+      expect(
+        sessionSource,
+        contains(
+          'let targets: [ARRaycastQuery.Target] = [.existingPlaneGeometry, .estimatedPlane]',
+        ),
+        reason:
+            '`.existingPlaneInfinite` sẽ "cứu" được cảnh trong ảnh máy thật — '
+            'nó kéo dài mặt bàn xuyên qua cái iPad và trả về một điểm. Nhưng '
+            'điểm ấy nằm ở CAO ĐỘ MẶT BÀN chứ không phải mặt iPad, và chĩa vào '
+            'tường xa thì nó trả một điểm đâu đó dọc mặt sàn kéo dài. Một con '
+            'số trông bình thường mà sai là dạng hỏng tệ nhất của gói này.',
+      );
+    });
+  });
+}
+
+/// Thân một phương thức Swift, từ chữ ký tới dấu đóng ở cột 2.
+///
+/// Mọi phương thức trong `ArMeasureSession.swift` thụt hai mức, nên `\n  }` là
+/// dấu đóng của chính nó và không thể là dấu đóng của một khối lồng bên trong.
+String _swiftMethodBody(String source, String signature) {
+  final start = source.indexOf(signature);
+  expect(
+    start,
+    greaterThanOrEqualTo(0),
+    reason: 'không tìm thấy `$signature` trong ArMeasureSession.swift',
+  );
+
+  final end = source.indexOf('\n  }', start);
+  expect(
+    end,
+    greaterThan(start),
+    reason: 'không tìm được dấu đóng của `$signature`',
+  );
+
+  return source.substring(start, end);
 }

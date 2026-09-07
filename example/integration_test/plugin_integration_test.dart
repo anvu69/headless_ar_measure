@@ -37,10 +37,13 @@ void main() {
   testWidgets('a command for an unknown view returns a sentinel', (
     tester,
   ) async {
-    final placed = await channel.invokeMethod<bool>('placePoint', {
+    // `notReady`, not `missed`: there is no view, so there is no session and
+    // no ray. Answering `missed` would send the user off to move the phone
+    // around looking for a surface that was never the problem.
+    final placed = await channel.invokeMethod<String>('placePoint', {
       'viewId': -1,
     });
-    expect(placed, isFalse);
+    expect(placed, 'notReady');
 
     for (final method in ['undoPoint', 'reset', 'pause', 'resume', 'dispose']) {
       await expectLater(
