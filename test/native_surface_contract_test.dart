@@ -630,6 +630,80 @@ void main() {
       );
     });
   });
+
+  group('chụp khung hình', () {
+    // Cả năm ca dưới đây canh cùng một dạng hỏng: ảnh VẪN ra, tệp VẪN có, và
+    // thứ sai chỉ lộ ra khi mở ảnh lên xem trên một máy khác.
+    test('lệnh khớp từng chữ giữa Swift và Dart', () {
+      expect(pluginSource, contains('case "captureFrame":'));
+      expect(dartSource, contains("invokeMethod<String>('captureFrame'"));
+    });
+
+    test('đọc capturedImage, KHÔNG dùng snapshot() của SceneKit', () {
+      final than = _swiftMethodBody(sessionSource, 'func captureFrame()');
+
+      expect(
+        _withoutComments(sessionSource),
+        contains('CIImage(cvPixelBuffer: frame.capturedImage)'),
+        reason:
+            'khung phải THUẦN: hai chấm và đoạn thẳng là thứ SceneKit vẽ, và '
+            'ảnh cuối dựng lại lớp phủ ấy ở Dart. Lấy cả hai là vẽ đè hai lần.',
+      );
+      expect(
+        _withoutComments(than),
+        isNot(contains('snapshot()')),
+        reason:
+            '`ARSCNView.snapshot()` trả về đúng thứ đang hiện — kể cả hình đo '
+            'của SceneKit lẫn hướng dẫn quét bề mặt của Apple.',
+      );
+    });
+
+    test('ghi ĐÚNG CHIỀU bằng displayTransform, không dựa cờ EXIF', () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(
+        sach,
+        contains('displayTransform(for:'),
+        reason:
+            '`capturedImage` luôn nằm ngang theo cảm biến, bất kể máy đang cầm '
+            'thế nào. Không nướng phép xoay vào điểm ảnh thì ảnh chỉ đúng chiều '
+            'ở những trình xem chịu đọc cờ EXIF.',
+      );
+      expect(
+        sach,
+        isNot(contains('kCGImagePropertyOrientation')),
+        reason:
+            'ghi cờ hướng là nói "ảnh nằm nghiêng, người xem tự xoay hộ" — '
+            'đúng thứ mà spec §5.1 cấm dựa vào.',
+      );
+    });
+
+    test('ảnh nằm ở thư mục TẠM, không nằm trong Documents', () {
+      final than = _swiftMethodBody(sessionSource, 'func captureFrame()');
+
+      expect(
+        _withoutComments(than),
+        contains('temporaryDirectory'),
+        reason:
+            'gói không biết app muốn cất ảnh ở đâu. Nó trả một tệp tạm; chỗ '
+            'lưu thật (và cái tên mang mốc thời gian) là việc của app.',
+      );
+      expect(
+        _withoutComments(sessionSource),
+        isNot(contains('.documentDirectory')),
+      );
+    });
+
+    // §5.3 của spec app: một tấm ảnh xuất ra có GPS mâu thuẫn trực tiếp với
+    // câu đã đăng trên trang riêng tư. Chặn từ gói là chặn ở chỗ RẺ nhất —
+    // gói không hề nhập CoreLocation, nên không có gì để gắn vào.
+    test('không có đường nào gắn vị trí vào ảnh', () {
+      for (final src in [sessionSource, pluginSource, viewSource]) {
+        expect(src, isNot(contains('CLLocation')));
+        expect(src, isNot(contains('import CoreLocation')));
+      }
+    });
+  });
 }
 
 /// Thân một phương thức Swift, từ chữ ký tới dấu đóng ở cột 2.

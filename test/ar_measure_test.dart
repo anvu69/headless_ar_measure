@@ -474,7 +474,7 @@ void main() {
           );
     });
 
-    // Sáu lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
+    // Bảy lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
     // không tra được view nào trong sổ đăng ký, và lệnh rơi vào chỗ trống mà
     // không có gì nổ — đúng dạng lỗi câm mà ca kiểm này tồn tại để chặn.
     test('mọi lệnh gửi đúng tên và kèm viewId', () async {
@@ -485,6 +485,7 @@ void main() {
       await c.reset();
       await c.pause();
       await c.resume();
+      await c.captureFrame();
       await c.dispose();
 
       expect(calls.map((c) => c.method), [
@@ -493,6 +494,7 @@ void main() {
         'reset',
         'pause',
         'resume',
+        'captureFrame',
         'dispose',
       ]);
       for (final call in calls) {
@@ -552,6 +554,49 @@ void main() {
       expect(
         await place((_) async => throw PlatformException(code: 'boom')),
         ArMeasurePlaceResult.notReady,
+      );
+    });
+
+    // `captureFrame` là lệnh DUY NHẤT trả về một tài nguyên (một tệp trên
+    // đĩa), nên nó là lệnh duy nhất mà "không đọc được" phải phân biệt được
+    // với "đọc được một chuỗi rỗng". `null` nói KHÔNG có tệp nào; một chuỗi
+    // rỗng đi tiếp vào `File('')` và nổ ở tầng khác, xa chỗ hỏng.
+    test('captureFrame trả đúng đường dẫn tầng nền báo', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel(ArMeasure.methodChannelName),
+            (call) async => '/tmp/ar-frame-1.jpg',
+          );
+
+      expect(
+        await const ArMeasureController(1).captureFrame(),
+        '/tmp/ar-frame-1.jpg',
+      );
+    });
+
+    test('captureFrame không đọc được thì về null, không ném', () async {
+      Future<String?> capture(
+        Future<Object?> Function(MethodCall) handler,
+      ) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              handler,
+            );
+        return const ArMeasureController(1).captureFrame();
+      }
+
+      // Không có khung hình nào để ghi (phiên chưa chạy, view đã chết).
+      expect(await capture((_) async => null), isNull);
+      // Một bản Swift lệch pha trả sai kiểu.
+      expect(await capture((_) async => 12), isNull);
+      expect(
+        await capture((_) async => throw MissingPluginException()),
+        isNull,
+      );
+      expect(
+        await capture((_) async => throw PlatformException(code: 'boom')),
+        isNull,
       );
     });
 

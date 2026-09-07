@@ -696,6 +696,36 @@ class ArMeasureController {
   /// một con số trông bình thường mà sai.
   Future<void> resume() => _send('resume');
 
+  /// Ghi khung hình camera hiện tại ra một tệp JPEG trong thư mục TẠM, và trả
+  /// đường dẫn của nó.
+  ///
+  /// Khung **THUẦN**: không hai chấm, không đoạn thẳng, không một chữ nào. Gói
+  /// vẽ hai thứ đầu trong SceneKit vì chỉ tầng Swift biết chúng chiếu xuống màn
+  /// ở đâu; nhưng một tấm ảnh thì người gọi hợp lấy, và hợp trên một nền đã có
+  /// sẵn nửa lớp phủ là vẽ đè hai lần lệch một nhịp.
+  ///
+  /// Cỡ ảnh bằng cỡ **khung ngắm** nhân hệ số điểm ảnh của màn, và chiều ảnh
+  /// nướng thẳng vào điểm ảnh (không cờ EXIF). Nên toạ độ mà [ArMeasure.overlay]
+  /// bắn ra — cùng khung ngắm ấy, đơn vị point — quy sang toạ độ ảnh bằng đúng
+  /// một phép nhân.
+  ///
+  /// `null` nghĩa là KHÔNG có tệp nào: phiên chưa chạy, view đã chết, kênh
+  /// hỏng, hay đĩa không ghi được. Không bao giờ ném, và không bao giờ trả một
+  /// chuỗi rỗng — chuỗi rỗng đi tiếp được vào một `File` rồi mới nổ, xa chỗ
+  /// hỏng.
+  ///
+  /// **Tệp là của người gọi.** Gói không xoá nó, và thư mục tạm chỉ được hệ
+  /// điều hành dọn theo lịch riêng của nó.
+  Future<String?> captureFrame() async {
+    try {
+      return await ArMeasure._method.invokeMethod<String>('captureFrame', {
+        'viewId': viewId,
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Dừng hẳn phiên và tắt camera.
   ///
   /// **Phải gọi từ `State.dispose()`.** iOS không có callback dispose cho

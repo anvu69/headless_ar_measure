@@ -24,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.2.0
+  headless_ar_measure: ^0.3.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -92,6 +92,7 @@ controller?.dispose();
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
 | `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
+| `ArMeasureController.captureFrame()` | Writes the current camera frame to a JPEG in the temp directory and returns its path, or `null` |
 | `ArMeasureController.dispose()` | **Required.** Stops the session and turns the camera off |
 
 ### The crosshair has to say whether it is on something
@@ -193,6 +194,27 @@ layer, and it says what the machine did.
 Every field is nullable on purpose. No camera frame, a value ARKit adds in a
 later iOS, an older native build — all of it comes back `null` rather than a
 plausible default, because a plausible default here is manufactured evidence.
+
+### A captured frame is bare on purpose
+
+`captureFrame()` writes the current camera frame — and nothing else — to a JPEG
+in the temp directory. No dots, no segment, no coaching card. `ARSCNView`
+does have a `snapshot()`, and it would have been one line; it returns what is
+on screen, which includes Apple's coaching overlay, and it does not include the
+one thing a person keeps a photo for: the number. Your app already draws that
+number in Flutter. Compose on a bare frame and it is drawn once.
+
+Two properties make composing possible at all:
+
+* the image is the size of the **viewport** times the screen scale, not the
+  sensor's full 12MP — so the point coordinates from `ArMeasure.overlay` map
+  onto it with a single multiply;
+* the rotation is baked into the **pixels** via `ARFrame.displayTransform`, not
+  written as an EXIF orientation flag. The file is upright in any viewer, not
+  only the ones that read the flag.
+
+The file belongs to the caller: this package never deletes it, and the system
+clears the temp directory on a schedule of its own.
 
 ### `dispose()` is not optional
 

@@ -126,6 +126,12 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       session(for: call)?.resume()
       result(nil)
 
+    case "captureFrame":
+      // `nil` là giá trị canh gác, và nó đi thẳng về Dart thành `null`: không
+      // có view, phiên đã dừng, hay chưa có khung hình nào — cả ba đều là
+      // "không có ảnh", và cả ba đều cần đúng một câu nói với người dùng.
+      result(session(for: call)?.captureFrame())
+
     case "dispose":
       // Đường CHÍNH để tắt camera. iOS không có callback dispose cho platform
       // view, nên nếu Dart không gọi tới đây thì phiên chỉ chết khi engine

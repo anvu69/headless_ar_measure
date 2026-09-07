@@ -932,6 +932,117 @@ final class ArMeasureSession: NSObject {
     }
   }
 
+  // MARK: - Chụp khung hình
+
+  /// Ghi khung hình camera hiện tại ra một tệp JPEG trong thư mục TẠM, và trả
+  /// đường dẫn của nó. Không có khung nào để ghi thì trả `nil`.
+  ///
+  /// **Khung THUẦN.** Không có hai chấm, không có đoạn thẳng, không có một chữ
+  /// nào. Ba lý do, và lý do thứ ba là lý do thật:
+  ///
+  /// * `ARSCNView.snapshot()` trả về đúng thứ đang hiện, kể cả hướng dẫn quét
+  ///   bề mặt của Apple — một tấm thẻ chữ trắng chình ình giữa ảnh;
+  /// * hình đo của SceneKit không mang con số, mà con số mới là thứ người ta
+  ///   chụp ảnh để giữ;
+  /// * app đã có sẵn một lớp phủ Dart vẽ con số ấy, và nó phải là lớp phủ DUY
+  ///   NHẤT — hai lớp vẽ cùng một phép đo, lệch nhau một nhịp, là thứ nhìn ra
+  ///   ngay trên ảnh tĩnh.
+  ///
+  /// **Chiều ảnh nướng thẳng vào điểm ảnh.** `capturedImage` luôn nằm theo
+  /// cảm biến (ngang, gốc ở góc trên-trái của cảm biến) bất kể máy đang cầm
+  /// thế nào, nên ảnh phải đi qua đúng phép biến đổi mà ARKit dùng để vẽ nền
+  /// camera lên màn: [ARFrame.displayTransform]. Không nướng thì tệp chỉ đúng
+  /// chiều ở những trình xem chịu đọc cờ EXIF — và người nhận ảnh ở một máy
+  /// khác không chắc dùng trình xem nào.
+  ///
+  /// Cỡ ảnh bằng cỡ KHUNG NGẮM nhân hệ số điểm ảnh, nên toạ độ màn mà kênh lớp
+  /// phủ bắn ra (đơn vị point) quy sang toạ độ ảnh bằng đúng một phép nhân.
+  /// Ảnh 12 MP đầy đủ của cảm biến thì không: nó rộng hơn khung ngắm theo một
+  /// tỉ lệ khác, và lớp phủ vẽ lên đó sẽ lệch khỏi thứ người dùng vừa nhìn.
+  func captureFrame() -> String? {
+    guard !isStopped, let frame = sceneView.session.currentFrame else { return nil }
+
+    let viewport = sceneView.bounds.size
+    guard viewport.width > 0, viewport.height > 0 else { return nil }
+    let scale = sceneView.contentScaleFactor > 0 ? sceneView.contentScaleFactor : 1
+
+    guard
+      let data = Self.jpegData(
+        from: frame,
+        viewport: viewport,
+        scale: scale,
+        orientation: currentInterfaceOrientation())
+    else { return nil }
+
+    // Thư mục TẠM, và tên ngẫu nhiên. Gói không biết app muốn cất ảnh ở đâu,
+    // cũng không biết app muốn đặt tên thế nào — chỗ lưu thật và cái tên mang
+    // mốc thời gian là việc của app, và app phải xoá tệp này sau khi hợp ảnh.
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ar-frame-\(UUID().uuidString).jpg")
+    do {
+      try data.write(to: url, options: .atomic)
+    } catch {
+      // Không ném: đây là giá trị trả về của một cú bấm nút.
+      return nil
+    }
+    return url.path
+  }
+
+  /// Hướng GIAO DIỆN, không phải hướng máy.
+  ///
+  /// `displayTransform` hỏi hướng giao diện vì nó tính phép chiếu lên một khung
+  /// ngắm đang nằm theo hướng ấy. Đọc `UIDevice.orientation` là đọc cái máy —
+  /// nó còn có `.faceUp`/`.faceDown`, hai giá trị không nói gì về khung ngắm.
+  private func currentInterfaceOrientation() -> UIInterfaceOrientation {
+    sceneView.window?.windowScene?.interfaceOrientation ?? .portrait
+  }
+
+  /// Dựng một lần rồi dùng lại: `CIContext` mang theo cả một đường ống Metal,
+  /// và dựng nó ở mỗi cú bấm là một quãng khựng nhìn thấy được.
+  private static let renderContext = CIContext(options: nil)
+
+  /// Nướng phép xoay vào điểm ảnh rồi nén JPEG.
+  ///
+  /// `static` và nhận đủ tham số: không đọc gì từ phiên, nên phép biến đổi này
+  /// đọc được bằng mắt mà không phải dò xem trạng thái nào đang ở giá trị nào.
+  private static func jpegData(
+    from frame: ARFrame,
+    viewport: CGSize,
+    scale: CGFloat,
+    orientation: UIInterfaceOrientation
+  ) -> Data? {
+    var image = CIImage(cvPixelBuffer: frame.capturedImage)
+    let raw = image.extent.size
+    guard raw.width > 0, raw.height > 0 else { return nil }
+
+    // `displayTransform` làm việc trong hệ ĐƠN VỊ gốc TRÊN-TRÁI, còn `CIImage`
+    // đo bằng điểm ảnh gốc DƯỚI-TRÁI. Nên bốn bước, và hai bước lật là bắt
+    // buộc: bỏ chúng thì ảnh vẫn ra, vẫn đúng tỉ lệ, chỉ lộn ngược.
+    let flip = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -1)
+    let toUnit = CGAffineTransform(scaleX: 1 / raw.width, y: 1 / raw.height)
+    let display = frame.displayTransform(for: orientation, viewportSize: viewport)
+    let width = (viewport.width * scale).rounded()
+    let height = (viewport.height * scale).rounded()
+    let toPixels = CGAffineTransform(scaleX: width, y: height)
+
+    image = image.transformed(
+      by:
+        toUnit
+        .concatenating(flip)
+        .concatenating(display)
+        .concatenating(flip)
+        .concatenating(toPixels))
+    image = image.cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+    guard !image.extent.isEmpty else { return nil }
+
+    let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+    guard let space else { return nil }
+    // KHÔNG truyền `kCGImagePropertyOrientation`: phép xoay đã nằm trong điểm
+    // ảnh, và một cờ hướng cộng thêm là một lượt xoay THỨ HAI ở trình xem nào
+    // chịu đọc nó.
+    return renderContext.jpegRepresentation(of: image, colorSpace: space, options: [:])
+  }
+
   // MARK: - Raycast phân tầng
 
   /// Bắn tia từ con trỏ giữa màn.

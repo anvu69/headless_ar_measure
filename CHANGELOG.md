@@ -1,3 +1,33 @@
+## 0.3.0
+
+A photo of a measurement is a different artefact from a measurement. It outlives
+the session, it leaves the app, and it is the only thing left when someone asks
+you a week later how wide the doorway was.
+
+* **`ArMeasureController.captureFrame()`** — writes the current camera frame to
+  a JPEG in the temp directory and returns its path. `null` means there is no
+  file, for any reason at all: no session, dead view, dead channel, unwritable
+  disk. It never throws, and it never returns an empty string, because an empty
+  string travels one more layer before it fails.
+* The frame is **bare**. No dots, no segment, no coaching card. `snapshot()`
+  would have been one line and would have returned all three — including
+  Apple's coaching card, a white slab across the middle of the picture — while
+  still not returning the number, which is the thing people keep a photo for.
+  Your app draws the number; composing on a bare frame draws it once.
+* The image is the size of the **viewport** times the screen scale, not the
+  sensor's full 12MP. The point coordinates from `ArMeasure.overlay` therefore
+  land on it with a single multiply. A full-sensor image has a different aspect
+  ratio from the viewport, and an overlay drawn on it sits somewhere other than
+  where the person just saw it.
+* Rotation is baked into the **pixels**, through `ARFrame.displayTransform` for
+  the current interface orientation — not written as an EXIF orientation flag.
+  A viewer that ignores the flag is not a rare viewer.
+* The file belongs to the caller. This package does not delete it.
+
+Not verified on a device yet: whether the baked rotation is right in all four
+interface orientations, and whether the overlay coordinates land where they
+should on the composed image at @2x and @3x.
+
 ## 0.2.0
 
 Until now the segment only appeared once *both* points were down. Everything
