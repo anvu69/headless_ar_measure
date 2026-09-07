@@ -68,8 +68,12 @@ ArMeasureView(
 );
 
 // Later, from a button:
-final placed = await controller?.placePoint() ?? false;
-if (!placed) { /* the ray hit nothing — tell the user to aim at a surface */ }
+switch (await controller?.placePoint()) {
+  case ArMeasurePlaceResult.placed:            // haptic, and carry on
+  case ArMeasurePlaceResult.missed:            // "move around until it locks"
+  case ArMeasurePlaceResult.alreadyComplete:   // "read the number, or undo"
+  case ArMeasurePlaceResult.notReady || null:  // the status already says why
+}
 
 // And from State.dispose():
 controller?.dispose();
@@ -81,11 +85,43 @@ controller?.dispose();
 | `ArMeasure.samples` | Status and distance, one broadcast stream |
 | `ArMeasure.parseSample()` | Builds an `ArMeasureSample` from raw channel data |
 | `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface. Takes no touches — put your buttons on top of it |
-| `ArMeasureController.placePoint()` | Places a point under the screen centre; `false` if the ray hit nothing |
+| `ArMeasureController.placePoint()` | Places a point under the screen centre; returns an `ArMeasurePlaceResult` saying why not, when not |
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
 | `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
 | `ArMeasureController.dispose()` | **Required.** Stops the session and turns the camera off |
+
+### The crosshair has to say whether it is on something
+
+`ArMeasureSample.aimLocked` is `true` while a ray from the centre of the screen
+is hitting a surface — in other words, while a tap would actually place a point.
+Draw two crosshairs and swap between them on that flag, the way Apple's Measure
+app does. The user moves the phone until it locks, and then taps.
+
+This is not polish. Without it, a miss and a broken button look identical: a
+real device, aimed at a glossy black tablet screen at close range — reflective,
+untextured, near-zero feature points, the worst surface ARKit can be handed —
+produced a "Place" button that did nothing at all, with `ready` on screen the
+whole time. The ray was missing, correctly; nothing said so.
+
+The flag is probed with the **same** raycast `placePoint()` uses, at 10Hz,
+under a 0.3s grace period before it drops back to `false` so a marginal surface
+does not strobe it. It is always `false` outside `ready` and `firstPointPlaced`
+— once both points are down there is nothing left to aim at.
+
+And when a tap does miss anyway, `placePoint()` says which kind of nothing
+happened:
+
+| `ArMeasurePlaceResult` | What to say |
+|---|---|
+| `placed` | nothing — fire a haptic |
+| `missed` | move slowly around the object until the crosshair locks |
+| `notReady` | the current `ArMeasureStatus` already carries the reason |
+| `alreadyComplete` | both points are down; read the number, or undo |
+
+`notReady` is also what you get when the channel cannot answer at all — a
+missing plugin, a disposed view. Never `missed`: inviting someone to keep
+moving the phone will not revive a dead channel.
 
 ### `dispose()` is not optional
 

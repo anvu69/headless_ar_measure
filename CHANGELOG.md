@@ -1,5 +1,52 @@
 ## Unreleased
 
+Second run on real hardware (iPhone 16 Plus): the camera works, the coaching
+overlay samples the room, the session reports `ready` — and the Place button
+does nothing. Aimed at a glossy black tablet screen at close range, the raycast
+was missing every time, correctly, with nothing on screen saying so.
+
+* **`ArMeasureSample.aimLocked`** — whether a ray from the centre of the screen
+  is currently hitting a surface, i.e. whether a tap would place a point. Swap
+  the crosshair on it, the way Apple's Measure app does, and a miss stops
+  looking like a dead button. Probed with the *same* raycast `placePoint()`
+  uses — a crosshair that promises one ray and a button that fires another is
+  the same failure with extra steps. Always `false` outside `ready` and
+  `firstPointPlaced`.
+* The probe runs at 10Hz rather than per frame: it is a boolean nobody can read
+  faster than that, it stays under the 15Hz sample pacing so it can never be
+  what saturates the channel, and the per-frame budget stays with the distance
+  path that has to run at frame rate. It drops back to `false` only after 0.3s
+  of consecutive misses, so a marginal surface does not strobe the crosshair.
+  A flip of the flag bypasses the pacing entirely — that pacing is anchored on
+  "the distance moved more than 0.5mm", and the flag changes precisely when
+  there is no distance yet.
+* **`placePoint()` returns `ArMeasurePlaceResult`, not `bool`.** Three of the
+  four values mean "no point was placed", for three reasons whose remedies are
+  opposite: `missed` (move around until it locks), `notReady` (the status says
+  why), `alreadyComplete` (read the number, or undo). `notReady` is also the
+  fallback when the channel cannot answer, because telling someone to keep
+  moving the phone will not revive a dead channel. **Breaking.**
+* `isAutoFocusEnabled` is now set explicitly. It is already Apple's default,
+  but it is the one flag in the whole configuration that makes detection
+  materially harder when it is off — at the near end of this package's 0.3–3m
+  range, a focus locked at infinity blurs the image enough that ARKit extracts
+  almost no feature points. A default is not a contract.
+* `environmentTexturing` and `frameSemantics` stay off, deliberately, and there
+  are now tests pinning that. Neither touches plane detection or raycasting:
+  environment texturing builds light probes for reflections on virtual content
+  that this package does not have (its marks use a `.constant` material that
+  takes no light), and `.sceneDepth` only exposes `ARFrame.sceneDepth` for an
+  app to read — ARKit's own raycast already consumes the LiDAR mesh through
+  `sceneReconstruction`. Neither makes a single ray hit.
+* The raycast keeps its two layers and does **not** gain
+  `.existingPlaneInfinite`. That third layer would have "rescued" the exact
+  scene that failed — it extends the table plane straight through the tablet
+  sitting on it — but the point it returns is at *table* height, and aimed at a
+  distant wall it returns somewhere along an extended floor. A number that
+  looks ordinary and is wrong is this package's worst failure mode.
+
+## Earlier in Unreleased
+
 First run on real hardware (iPhone 16 Plus), and four things it turned up.
 
 * **The camera prompt is now this package's job.** Authorization that is still
