@@ -187,6 +187,17 @@ final class ArMeasureSession: NSObject {
     // Và không dựng node nào cho anchor — xem [ArMeasureNodeSuppressor].
     sceneView.delegate = nodeSuppressor
 
+    // Bề mặt này chỉ để NHÌN. Mọi thao tác — chấm, hoàn tác, đóng — là nút
+    // Flutter nằm đè lên trên, nên `ARSCNView` không được nhận cú chạm nào:
+    // tắt hẳn tương tác thì `hitTest` của UIKit không bao giờ dừng ở đây và
+    // chạm rơi thẳng xuống lớp Flutter.
+    //
+    // Cái giá: nút "Reset" mà [coachingOverlay] hiện lúc đang nối lại vị trí
+    // cũng không bấm được. Chấp nhận có chủ đích — phiên tự bỏ cuộc sau
+    // [relocalizationDeadlineSeconds] và app có lệnh `reset` riêng, nên không
+    // có đường nào cụt.
+    sceneView.isUserInteractionEnabled = false
+
     sceneView.session.delegate = self
     // `ARSession.delegate` là một tham chiếu YẾU, nên dòng trên không dựng vòng.
     sceneView.session.delegateQueue = .main
