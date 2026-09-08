@@ -111,6 +111,10 @@ hitting right now. Four answers, not two:
 (`aimTarget != null`), kept so existing code does not have to change. Both come
 from one raycast, so they cannot disagree.
 
+`ArMeasureSample.aimPlaneId` rides the same probe and says **which** plane, not
+what kind — the piece that lets you warn before the second tap lands on a
+different surface. See "Which plane, not just what kind of plane".
+
 This is not polish. Without it, a miss and a broken button look identical: a
 real device, aimed at a glossy black tablet screen at close range — reflective,
 untextured, near-zero feature points, the worst surface ARKit can be handed —
@@ -239,6 +243,50 @@ sometimes 0**. That is not enough material for any plane fit, so the choice was
 never "extrapolate or measure correctly". It was extrapolate with a label, or
 measure nothing.
 
+### Which plane, not just what kind of plane
+
+Since 0.8.0 every hit carries the identity of the `ARPlaneAnchor` it landed on:
+
+| Field | Which ray |
+|---|---|
+| `ArMeasureSample.aimPlaneId` | the ray being aimed right now |
+| `ArPointDiagnostics.planeId` | a point that was already placed |
+
+It exists because two real-device failures walked straight through every other
+diagnostic field. An endpoint left floating on a wall was sitting on the
+*tabletop* plane extended nearly two metres — `planeAlignment` `horizontal`,
+identical to the first point. Points that snapped below the table legs were on
+the *floor*, because the tabletop had not been detected yet — and floor and
+tabletop are **both horizontal**. Same alignment, same tier, extents that
+conclude nothing. Comparing identities is the only thing that separates them.
+
+It is an **opaque string, compared for equality only.** Do not parse it, display
+it, or persist it across sessions: ARKit regenerates every plane identity each
+session, so two sessions are not comparable.
+
+`null` means **there is no plane** — a different claim from *there is one, and
+it is a different one*, and your code has to keep those apart. It arrives on
+three routes: the hit landed on `estimatedPlane` (that tier fits a plane from the
+geometry around the ray and anchors it to nothing), a native build older than the
+field, or an empty string, which is rejected at the door because `'' == ''` would
+make any two points read as the same plane.
+
+**It is the identity at placement time, and nothing rewrites it.** ARKit
+**merges** planes: two anchors become one and the swallowed one is removed, so an
+identity stored at tap time can point at a plane that no longer exists. The
+package does not chase merges, because ARKit never says *which* plane absorbed
+the removed one — reconstructing that needs a geometric guess, and a wrong guess
+prints exactly the words "same plane", silently. A stale but honest answer beats
+that.
+
+The consequence to design for: after a merge, two points on what is physically
+one tabletop may report two identities. That is a false alarm, and it is the safe
+direction — you can see it and decide. The other direction cannot be seen at all.
+
+**The package draws no conclusion.** Whether two identities mean "same surface"
+depends on what you are measuring, the same boundary `overshootMm` draws. The
+package reports which plane; the policy is yours.
+
 ### The segment is live before the second tap
 
 Once the first point is down, the package draws a segment from it to whatever
@@ -295,6 +343,7 @@ field.
 | `sessionAgeMs` | milliseconds since the last `run(...)`. Resets with the coordinate system, so it answers "was the session still warming up?" |
 | `cameraDistanceMm` | camera centre to the placed point |
 | `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing. `ArMeasureSample.aimRayAngleDeg` is the same number for the ray you are aiming *now* |
+| `planeId` | **which** plane was hit — an opaque identity, for equality only. `null` on an estimated plane, because that tier has no anchor. See below |
 | `planeAlignment`, `planeWidthMm`, `planeHeightMm` | the `ARPlaneAnchor` that was hit, if any. All three `null` when the hit landed on an estimated plane |
 | `overshootMm` | how far outside that plane's real boundary the point landed. Non-`null` **only** at `existingPlaneInfinite` — see below |
 

@@ -150,6 +150,7 @@ class ArPointDiagnostics {
     this.sessionAgeMs,
     this.cameraDistanceMm,
     this.rayAngleDeg,
+    this.planeId,
     this.planeAlignment,
     this.planeWidthMm,
     this.planeHeightMm,
@@ -174,6 +175,51 @@ class ArPointDiagnostics {
   /// 90° là chĩa vuông góc vào mặt, 0° là tia lướt sát mặt. Không phải góc so
   /// với pháp tuyến — hai góc ấy bù nhau, và cả hai đều nằm trong 0–90.
   final double? rayAngleDeg;
+
+  /// **Mặt phẳng NÀO** — định danh của mặt phẳng điểm này rơi lên.
+  ///
+  /// Chuỗi mờ, chỉ dùng để **so sánh bằng nhau**. Đừng phân tích nó, đừng hiển
+  /// thị nó, đừng lưu nó như một khoá liên phiên: ARKit sinh lại định danh của
+  /// mọi mặt phẳng ở mỗi phiên, nên hai phiên khác nhau không so được với nhau.
+  ///
+  /// **Vì sao nó tồn tại, khi đã có [planeAlignment] và hai bề rộng.** Hai cảnh
+  /// hỏng trên máy thật, và cả hai lọt qua sạch mọi trường khác:
+  ///
+  /// 1. Điểm cuối lơ lửng trên tường nằm trên mặt phẳng MẶT BÀN kéo dài gần hai
+  ///    mét ([overshootMm] +1946), nên [planeAlignment] của nó vẫn
+  ///    [ArPlaneAlignment.horizontal] y hệt điểm đầu.
+  /// 2. Điểm bị bắt xuống dưới chân bàn rơi lên mặt SÀN, vì lúc ấy mặt bàn chưa
+  ///    được dò. Sàn và mặt bàn ĐỀU ngang.
+  ///
+  /// Phương giống nhau, tầng giống nhau, bề rộng không kết luận được gì. Mọi
+  /// phép suy từ những trường ấy trả lời "cùng mặt phẳng" ở đúng hai cảnh chúng
+  /// cần phân biệt — nên đây là một định danh THẬT, không phải một phép suy.
+  ///
+  /// **`null` là một sự thật, không phải một chỗ thiếu**, và app phải phân biệt
+  /// nó với "có mặt phẳng, và là mặt phẳng khác". Ba đường về `null`:
+  ///
+  /// * [target] là [ArRaycastTarget.estimatedPlane] — tầng ấy **không có mặt
+  ///   phẳng nào**: ARKit khớp một mặt phẳng từ hình học quanh tia và không neo
+  ///   nó vào đâu cả;
+  /// * tầng nền không nói được (một bản Swift cũ hơn trường này);
+  /// * chuỗi rỗng hay sai kiểu, bị chặn ở cửa — hai chuỗi rỗng bằng nhau, nên
+  ///   để một chuỗi rỗng đi tiếp là hai điểm bất kỳ đọc ra "cùng một mặt
+  ///   phẳng".
+  ///
+  /// **Gói KHÔNG kết luận "cùng hay khác".** Đó là việc của app, cùng một ranh
+  /// giới với [overshootMm]: gói trả sự thật đo được, app quyết.
+  ///
+  /// **Đây là định danh **lúc chấm**, và không đường nào viết lại nó.** ARKit
+  /// GỘP mặt phẳng: hai mặt phẳng nhập một, mặt bị nuốt biến mất, nên một định
+  /// danh lưu từ lúc chấm có thể trỏ vào một mặt phẳng không còn tồn tại. Gói
+  /// cố ý không đuổi theo lượt gộp, vì ARKit không nói mặt phẳng bị nuốt đã
+  /// nhập vào mặt phẳng NÀO — dựng lại ánh xạ ấy là một phép đoán, và một cú
+  /// đoán sai in ra đúng chữ "cùng mặt phẳng" mà trường này sinh ra để chặn.
+  ///
+  /// Hệ quả app phải biết: sau một lượt gộp, hai điểm trên thứ vật lý là MỘT
+  /// mặt bàn có thể khai hai định danh khác nhau. Đó là một báo động NHẦM, và
+  /// nó là chiều sai an toàn — người dùng thấy được. Chiều ngược lại im lặng.
+  final String? planeId;
 
   /// `null` khi tia trúng một mặt ƯỚC LƯỢNG: không có mặt phẳng nào cả.
   final ArPlaneAlignment? planeAlignment;
@@ -388,6 +434,7 @@ class ArMeasureSample {
     this.aimTarget,
     this.aimOvershootMm,
     this.aimRayAngleDeg,
+    this.aimPlaneId,
     this.diagnostics,
   });
 
@@ -498,6 +545,27 @@ class ArMeasureSample {
   /// Đây là chỗ nó khác [ArPointDiagnostics.rayAngleDeg] của các bản trước —
   /// con số kia chỉ để ĐỌC, con số này đi vào một phép chia.
   final double? aimRayAngleDeg;
+
+  /// Định danh mặt phẳng mà tia ĐANG ngắm rơi lên.
+  ///
+  /// Cùng một giá trị, cùng một luật đọc với [ArPointDiagnostics.planeId] —
+  /// đọc tài liệu ở đó trước; đây chỉ nói chỗ nó khác.
+  ///
+  /// Đo TRƯỚC cú bấm thay vì sau: dùng nó để nói ra rằng chỗ đang ngắm nằm trên
+  /// một mặt phẳng KHÁC mặt phẳng của điểm đầu, ở đúng lúc còn ngăn được cú bấm
+  /// — thay vì phát hiện sau khi đã có hai điểm và một con số.
+  ///
+  /// `null` ở **hai** đường, và cả hai đều là sự thật: tia không trúng gì, hoặc
+  /// tia trúng một mặt ƯỚC LƯỢNG ([ArRaycastTarget.estimatedPlane] không có mặt
+  /// phẳng nào để khai tên). Cộng đường thứ ba của mọi trường: một bản Swift cũ
+  /// hơn trường này.
+  ///
+  /// Chỗ nó khác [aimOvershootMm]: van chỉ có nghĩa ở tầng ngoại suy, còn định
+  /// danh có nghĩa ở cả tầng hình học lẫn tầng ngoại suy — mặt phẳng bị kéo dài
+  /// vẫn là một mặt phẳng đã dò ra, và nó vẫn có tên. Bất biến của van không
+  /// đổi: `aimOvershootMm != null` vẫn đúng bằng
+  /// `aimTarget == existingPlaneInfinite`.
+  final String? aimPlaneId;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -754,6 +822,12 @@ class ArMeasure {
       // `NaN` đi tiếp là `ε` thành `NaN`, mọi phép so sánh với nó `false`, và
       // ngưỡng "sượt quá thì đừng chốt" lặng lẽ không bao giờ đúng.
       aimRayAngleDeg: _parseFinite(raw['aimRayAngleDeg']),
+      // Qua [_parseIdentity] chứ không qua `as String?`, và đó không phải một
+      // lời gác kiểu cho đủ bộ: giá trị này chỉ dùng để SO SÁNH BẰNG NHAU, nên
+      // một chuỗi RỖNG lọt qua là hai mặt phẳng bất kỳ đọc ra "cùng một mặt
+      // phẳng" — đúng kết luận sai mà trường này sinh ra để chặn, và nó sai im
+      // lặng, về phía "yên tâm".
+      aimPlaneId: _parseIdentity(raw['aimPlaneId']),
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
@@ -891,6 +965,10 @@ class ArMeasure {
       sessionAgeMs: rawAge is num ? rawAge.round() : null,
       cameraDistanceMm: rawDistance is num ? rawDistance.toDouble() : null,
       rayAngleDeg: rawAngle is num ? rawAngle.toDouble() : null,
+      // Cùng cửa lọc với `aimPlaneId` của [parseSample], và cùng một lẽ: đây là
+      // một chuỗi để SO SÁNH, không phải một chuỗi để đọc. Một chuỗi rỗng ở đây
+      // làm hai điểm bất kỳ đọc ra "cùng một mặt phẳng".
+      planeId: _parseIdentity(raw['planeId']),
       planeAlignment: switch (raw['planeAlignment']) {
         'horizontal' => ArPlaneAlignment.horizontal,
         'vertical' => ArPlaneAlignment.vertical,
@@ -945,6 +1023,22 @@ class ArMeasure {
     final y = _parseFinite(rawY);
     if (x == null || y == null) return null;
     return Offset(x, y);
+  }
+
+  /// Một chuỗi định danh dùng được, hoặc `null`.
+  ///
+  /// Chặn cả chuỗi RỖNG, không chỉ chặn sai kiểu — và đây là chỗ nó khác một
+  /// phép ép kiểu thường. Chuỗi này không bao giờ được ĐỌC, nó chỉ được SO
+  /// SÁNH; mà `'' == ''` là `true`, nên hai giá trị rỗng đọc ra "cùng một mặt
+  /// phẳng" cho hai mặt phẳng chẳng liên quan gì nhau. Đó đúng là kết luận sai
+  /// mà cả trường này sinh ra để chặn, và nó không in ra một dấu hiệu nào.
+  ///
+  /// Không cắt khoảng trắng, không đổi hoa thường, không kiểm khuôn `UUID`: gói
+  /// không hứa giá trị này có dạng gì, và một phép chuẩn hoá là một chỗ nữa để
+  /// hai giá trị khác nhau bị kéo về bằng nhau.
+  static String? _parseIdentity(Object? raw) {
+    if (raw is! String || raw.isEmpty) return null;
+    return raw;
   }
 
   /// Một số thực hữu hạn, hoặc `null`.

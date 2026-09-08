@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name = 'headless_ar_measure'
-  s.version = '0.7.0'
+  s.version = '0.8.0'
   s.summary = 'Headless iOS AR measurement: status and distance as a stream.'
   s.description      = <<-DESC
 Wraps an ARKit camera surface into a typed Dart stream of status and

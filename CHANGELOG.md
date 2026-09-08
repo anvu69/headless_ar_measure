@@ -1,3 +1,80 @@
+## 0.8.0
+
+**Which plane.** Every hit now carries the identity of the `ARPlaneAnchor` it
+landed on, so the app can ask a question it had no way to answer: are the two
+endpoints on the **same** surface?
+
+Two real-device failures forced this, and both walked straight through all nine
+existing diagnostic fields:
+
+1. **An endpoint floating on a wall.** It sat on the *tabletop* plane extended
+   nearly two metres (`overshootMm` +1946), so its `planeAlignment` was
+   `horizontal` — identical to the first point's.
+2. **Three attempts that snapped below the table legs** — the *floor*, because
+   the tabletop had not been detected yet. Floor and tabletop are **both
+   horizontal**.
+
+Same alignment, same tier, and extents that conclude nothing. Every inference
+from the fields that existed answers "same plane" at exactly the two moments it
+must not. So this is a real identity, not an inference — and on the Swift side
+the thing needed was already sitting next to the overshoot valve:
+`hit.anchor as? ARPlaneAnchor`.
+
+| Field | Which ray |
+|---|---|
+| `ArMeasureSample.aimPlaneId` | the ray being aimed right now |
+| `ArPointDiagnostics.planeId` | a point that was already placed |
+
+* **`null` is a fact, and you must not collapse it into "same".** It means
+  *there is no plane*, which is a different claim from *there is one, and it is
+  a different one*. Three routes reach it: the hit landed on
+  `estimatedPlane` — that tier has no anchor at all, because ARKit fits a plane
+  from the geometry around the ray and anchors it to nothing; a native build
+  older than the field; or an empty/wrong-typed string, rejected at the door.
+
+* **The full `uuidString`, deliberately not shortened.** The value is only ever
+  compared for equality, never read, so truncating it *sounds* free. What it
+  buys is a few dozen bytes per sample. What it costs is a collision
+  probability — two different planes reading as one value — which is precisely
+  the wrong answer this field exists to prevent, arriving silently, with a
+  perfectly plausible-looking string on screen. A contract test rejects
+  `prefix(`, `suffix(`, `dropFirst(`, `dropLast(`, `hashValue` and `hash(`
+  inside the identity function.
+
+* **It is the identity at *placement time*, and nothing rewrites it.** ARKit
+  **merges** planes: two anchors become one, the swallowed anchor arrives at
+  `didRemove`, and an identity stored at tap time can end up pointing at a plane
+  that no longer exists. The package does not chase merges, and the reason is
+  that ARKit never says *which* plane absorbed the one it removed —
+  `session(_:didRemove:)` only says it is gone. Reconstructing that mapping
+  needs a geometric guess, and a wrong guess prints exactly the words "same
+  plane". A stale but honest answer beats a silent wrong one.
+
+  `adoptUpdatedAnchors` is **not** the same case, and the difference is the
+  whole argument: it swaps the *object* for the *same* `identifier` that ARKit
+  itself handed back. No guessing is involved. Following merges would mean
+  inventing an identity mapping ARKit never stated.
+
+  The consequence to know: after a merge, two points on what is physically one
+  tabletop may report two identities. That is a **false alarm**, and it is the
+  safe direction — the user sees it and can override it. The other direction is
+  the silent one, and it is the one that shipped twice.
+
+* **It is in the sample coalescer**, and it does not ride along on the other
+  three aim keys. The scene it exists to catch is exactly the scene where they
+  all hold still: panning the ray from the **tabletop** down to the **floor**.
+  Two different planes, both `horizontal`, both `existingPlaneGeometry`, the
+  valve `null` on both, and — held at the same tilt — the same ray angle.
+  `featureCensus` does not cover for it either: its own docs say it is an
+  instrument with an expiry date.
+
+**The package draws no conclusion.** It does not decide "same" or "different" —
+same boundary `overshootMm` already draws. It reports which plane; the policy is
+yours.
+
+Not published to pub.dev. 0.7.0 shipped a moment ago, and this one waits for a
+real device.
+
 ## 0.7.0
 
 Two numbers, and neither is a feature. The app on top of this package finished a

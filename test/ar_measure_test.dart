@@ -396,6 +396,99 @@ void main() {
       // "sượt quá thì đừng chốt" lặng lẽ không bao giờ đúng.
       expect(khongPhaiSo?.aimRayAngleDeg, isNull);
     });
+
+    /// Định danh mặt phẳng của tia ĐANG ngắm.
+    ///
+    /// Vì sao trường này tồn tại, và vì sao KHÔNG suy được từ những trường đã
+    /// có: hai cảnh hỏng trên máy thật lọt qua sạch mọi tín hiệu cũ.
+    ///
+    /// * Điểm cuối lơ lửng trên tường nằm trên mặt phẳng MẶT BÀN kéo dài gần
+    ///   hai mét, nên [ArPointDiagnostics.planeAlignment] của nó vẫn
+    ///   `horizontal` y hệt điểm đầu.
+    /// * Điểm bị bắt xuống dưới chân bàn rơi lên mặt SÀN, vì lúc ấy mặt bàn
+    ///   chưa được dò. Sàn và mặt bàn ĐỀU ngang.
+    ///
+    /// Phương giống nhau, tầng giống nhau, bề rộng không nói được gì. Mọi phép
+    /// suy từ chúng trả lời "cùng mặt phẳng" ở đúng hai cảnh nó sinh ra để bắt,
+    /// nên phải có một định danh THẬT.
+    test('aimPlaneId đọc được ở cả tầng hình học lẫn tầng ngoại suy', () {
+      final geometry = ArMeasure.parseSample({
+        'status': 'ready',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneGeometry',
+        'aimPlaneId': 'B3F1C0DE-4A2E-4C1B-9E77-000000000001',
+      });
+      final infinite = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneInfinite',
+        'aimOvershootMm': 1946.0,
+        'aimPlaneId': 'B3F1C0DE-4A2E-4C1B-9E77-000000000001',
+      });
+
+      expect(geometry?.aimPlaneId, 'B3F1C0DE-4A2E-4C1B-9E77-000000000001');
+      // Tầng ngoại suy KÉO DÀI một mặt phẳng đã dò, nên nó vẫn có mặt phẳng ấy
+      // để mà khai tên — và đây đúng là cảnh hỏng thứ nhất: cùng mặt bàn, kéo
+      // dài gần hai mét ra chỗ không có gì.
+      expect(infinite?.aimPlaneId, 'B3F1C0DE-4A2E-4C1B-9E77-000000000001');
+    });
+
+    /// `null` ở tầng ước lượng là một SỰ THẬT, không phải một chỗ thiếu.
+    ///
+    /// `.estimatedPlane` không có `ARPlaneAnchor` nào — ARKit khớp một mặt
+    /// phẳng từ hình học quanh tia và không neo nó vào đâu cả. App phải phân
+    /// biệt được "không có mặt phẳng" với "có mà khác nhau", nên bù một giá trị
+    /// giả ở đây là dựng ra đúng cái kết luận sai mà trường này sinh ra để chặn.
+    test('tầng ước lượng không có mặt phẳng nào, aimPlaneId về null', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'aimLocked': true,
+        'aimTarget': 'estimatedPlane',
+        'aimRayAngleDeg': 12.0,
+      });
+
+      expect(s?.aimTarget, ArRaycastTarget.estimatedPlane);
+      expect(s?.aimPlaneId, isNull);
+    });
+
+    test('không trúng gì thì aimPlaneId về null, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({'status': 'ready'});
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimTarget, isNull);
+      expect(s?.aimPlaneId, isNull);
+    });
+
+    /// Chuỗi RỖNG bị loại, và đó không phải một ca kiểu cho đủ bộ.
+    ///
+    /// Trường này chỉ dùng để SO SÁNH BẰNG NHAU, nên hai chuỗi rỗng đọc ra
+    /// "cùng một mặt phẳng" — đúng cái kết luận sai mà cả việc này sinh ra để
+    /// chặn, và nó sai theo chiều nguy hiểm: im lặng, và về phía "yên tâm".
+    test('aimPlaneId sai kiểu hay rỗng về null, không ném', () {
+      late ArMeasureSample? saiKieu;
+      late ArMeasureSample? rong;
+      expect(() {
+        saiKieu = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'existingPlaneGeometry',
+          'aimPlaneId': 42,
+        });
+        rong = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'existingPlaneGeometry',
+          'aimPlaneId': '',
+        });
+      }, returnsNormally);
+
+      expect(saiKieu?.aimPlaneId, isNull);
+      expect(
+        rong?.aimPlaneId,
+        isNull,
+        reason:
+            'Hai chuỗi rỗng bằng nhau, nên một chuỗi rỗng đi tiếp là hai mặt '
+            'phẳng bất kỳ đọc ra "cùng một mặt phẳng".',
+      );
+    });
   });
 
   /// Chẩn đoán: ảnh chụp của ĐIỀU KIỆN mỗi điểm được chấm.
@@ -783,7 +876,7 @@ void main() {
       expect(saiKieu?.diagnostics?.camera?.height, isNull);
     });
 
-    test('mặt ước lượng: không có mặt phẳng nào, ba khoá mp về null', () {
+    test('mặt ước lượng: không có mặt phẳng nào, bốn khoá mp về null', () {
       final s = ArMeasure.parseSample({
         'status': 'firstPointPlaced',
         'diagnostics': {
@@ -805,6 +898,14 @@ void main() {
       expect(p?.planeAlignment, isNull);
       expect(p?.planeWidthMm, isNull);
       expect(p?.planeHeightMm, isNull);
+      expect(
+        p?.planeId,
+        isNull,
+        reason:
+            'Tầng ước lượng không có `ARPlaneAnchor` nào để mà khai tên. `null` '
+            'ở đây là SỰ THẬT — "không có mặt phẳng" — và nó phải phân biệt '
+            'được với "có mặt phẳng, và là một mặt phẳng khác".',
+      );
       expect(
         p?.overshootMm,
         isNull,
@@ -843,6 +944,225 @@ void main() {
       );
       expect(points?[1].target, ArRaycastTarget.existingPlaneInfinite);
       expect(points?[1].overshootMm, 63.5);
+    });
+
+    /// Định danh mặt phẳng của mỗi điểm ĐÃ chấm.
+    ///
+    /// Cả cụm này canh đúng một câu hỏi mà app không trả lời nổi bằng chín
+    /// trường cũ: **hai đầu mút có nằm trên cùng một mặt phẳng không.**
+    ///
+    /// Hai cảnh hỏng trên máy thật, và cả hai lọt qua sạch:
+    ///
+    /// 1. Điểm cuối lơ lửng trên tường nằm trên mặt phẳng MẶT BÀN kéo dài gần
+    ///    hai mét (`overshootMm` +1946) — `planeAlignment` vẫn `horizontal` y
+    ///    hệt điểm đầu.
+    /// 2. Điểm bị bắt xuống dưới chân bàn rơi lên mặt SÀN, vì lúc ấy mặt bàn
+    ///    chưa được dò. Sàn và mặt bàn ĐỀU ngang.
+    ///
+    /// Gói KHÔNG kết luận "cùng hay khác" — cùng một ranh giới với
+    /// [ArPointDiagnostics.overshootMm]. Nó trả định danh; app so.
+    test('hai điểm trên HAI mặt phẳng khác nhau ra hai định danh khác nhau', () {
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+        'diagnostics': {
+          'points': [
+            {
+              'target': 'existingPlaneGeometry',
+              'planeAlignment': 'horizontal',
+              'planeId': 'B3F1C0DE-4A2E-4C1B-9E77-000000000001',
+            },
+            {
+              'target': 'existingPlaneGeometry',
+              'planeAlignment': 'horizontal',
+              'planeId': 'B3F1C0DE-4A2E-4C1B-9E77-000000000002',
+            },
+          ],
+        },
+      });
+
+      final points = s?.diagnostics?.points;
+      expect(points, hasLength(2));
+      // Cảnh hỏng số 2, dựng lại nguyên vẹn: mặt SÀN và mặt BÀN, cả hai đều
+      // `horizontal`, cả hai đều ở tầng hình học đã xác nhận. Thứ DUY NHẤT
+      // phân biệt chúng là hai định danh này.
+      expect(points?[0].planeAlignment, points?[1].planeAlignment);
+      expect(points?[0].target, points?[1].target);
+      expect(
+        points?[0].planeId,
+        isNot(points?[1].planeId),
+        reason:
+            'Hai mặt phẳng khác nhau mà ra cùng một định danh thì app kết luận '
+            '"cùng mặt phẳng" ở đúng cảnh trường này sinh ra để bắt.',
+      );
+    });
+
+    /// Nửa còn lại, và nó KHÔNG hiển nhiên: đây là chỗ một phép "rút gọn" cẩu
+    /// thả (lấy tám ký tự đầu, băm xuống một `int`) làm hai mặt phẳng khác nhau
+    /// đụng độ cùng một giá trị. Hai `UUID` dưới đây khác nhau ở ĐUÔI, và hai
+    /// cái nữa khác nhau ở ĐẦU — cắt bên nào cũng đỏ.
+    test('định danh KHÔNG bị rút gọn: khác đuôi hay khác đầu vẫn khác nhau', () {
+      final khacDuoi = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 400.0,
+        'tolMm': 8.0,
+        'diagnostics': {
+          'points': [
+            {'planeId': '1A2B3C4D-5E6F-4A8B-9C0D-E1F2A3B4C5D6'},
+            {'planeId': '1A2B3C4D-5E6F-4A8B-9C0D-E1F2A3B4C5D7'},
+          ],
+        },
+      });
+      final khacDau = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 400.0,
+        'tolMm': 8.0,
+        'diagnostics': {
+          'points': [
+            {'planeId': '1A2B3C4D-5E6F-4A8B-9C0D-E1F2A3B4C5D6'},
+            {'planeId': '2A2B3C4D-5E6F-4A8B-9C0D-E1F2A3B4C5D6'},
+          ],
+        },
+      });
+
+      expect(
+        khacDuoi?.diagnostics?.points[0].planeId,
+        isNot(khacDuoi?.diagnostics?.points[1].planeId),
+        reason: 'cắt đuôi (`prefix(8)`) làm hai mặt phẳng này bằng nhau',
+      );
+      expect(
+        khacDau?.diagnostics?.points[0].planeId,
+        isNot(khacDau?.diagnostics?.points[1].planeId),
+        reason: 'cắt đầu (`suffix(8)`) làm hai mặt phẳng này bằng nhau',
+      );
+    });
+
+    test('hai điểm trên CÙNG một mặt phẳng ra CÙNG một định danh', () {
+      const banId = 'B3F1C0DE-4A2E-4C1B-9E77-000000000001';
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+        'diagnostics': {
+          'points': [
+            {'target': 'existingPlaneGeometry', 'planeId': banId},
+            // Đầu kia đã ra ngoài biên mặt bàn — TẦNG khác, mặt phẳng thì vẫn
+            // là một. Định danh không được đổi theo tầng: nếu nó đổi thì cảnh
+            // hỏng số 1 (mặt bàn kéo dài gần hai mét) đọc ra "khác mặt phẳng",
+            // tức là đúng kết luận nhưng vì một lý do bịa, và cùng cái mã ấy
+            // sẽ nói dối ở cảnh mép bàn thật.
+            {
+              'target': 'existingPlaneInfinite',
+              'overshootMm': 1946.0,
+              'planeId': banId,
+            },
+          ],
+        },
+      });
+
+      final points = s?.diagnostics?.points;
+      expect(points?[0].planeId, banId);
+      expect(points?[1].planeId, banId);
+      expect(points?[0].planeId, points?[1].planeId);
+    });
+
+    /// Cảnh GỘP mặt phẳng, và hành vi đã chọn cho nó.
+    ///
+    /// ARKit gộp hai `ARPlaneAnchor` thành một: anchor bị nuốt đi qua
+    /// `didRemove`, anchor sống sót lớn ra. Một định danh lưu từ lúc chấm có
+    /// thể trỏ vào một mặt phẳng không còn tồn tại.
+    ///
+    /// **Gói để NGUYÊN.** Trường này là định danh **lúc chấm**, và nó không bao
+    /// giờ bị viết lại — lý do đầy đủ nằm ở [ArPointDiagnostics.planeId], gọn
+    /// lại là: ARKit không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO, nên
+    /// đuổi theo lượt gộp là đoán, và một cú đoán sai in ra đúng chữ "cùng mặt
+    /// phẳng" mà cả việc này sinh ra để chặn.
+    ///
+    /// Ca này dựng lại đúng cảnh ấy: mặt bàn vừa được dò xong và nuốt mảnh gần,
+    /// nên tia đang ngắm khai mặt phẳng MỚI trong khi điểm đã chấm vẫn khai mặt
+    /// phẳng CŨ. Gói bày cả hai ra và không hoà giải.
+    test('lượt GỘP mặt phẳng không viết lại định danh của điểm đã chấm', () {
+      const manhGan = 'B3F1C0DE-4A2E-4C1B-9E77-000000000001';
+      const banGopXong = 'B3F1C0DE-4A2E-4C1B-9E77-00000000000F';
+
+      final truocGop = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'aimTarget': 'existingPlaneGeometry',
+        'aimPlaneId': manhGan,
+        'diagnostics': {
+          'points': [
+            {'target': 'existingPlaneGeometry', 'planeId': manhGan},
+          ],
+        },
+      });
+      final sauGop = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'aimTarget': 'existingPlaneGeometry',
+        'aimPlaneId': banGopXong,
+        'diagnostics': {
+          'points': [
+            {'target': 'existingPlaneGeometry', 'planeId': manhGan},
+          ],
+        },
+      });
+
+      expect(truocGop?.aimPlaneId, manhGan);
+      expect(
+        sauGop?.diagnostics?.points.single.planeId,
+        manhGan,
+        reason:
+            'Định danh của một điểm đã chấm là định danh LÚC CHẤM. Viết lại nó '
+            'theo lượt gộp đòi một phép đoán mà ARKit không cung cấp dữ liệu để '
+            'làm, và cú đoán sai in ra đúng chữ "cùng mặt phẳng".',
+      );
+      expect(
+        sauGop?.aimPlaneId,
+        banGopXong,
+        reason:
+            'Tia ĐANG ngắm luôn khai mặt phẳng của lượt bắn NÀY. Nó không bị '
+            'kéo về theo điểm đã chấm — hai trường nói về hai khoảnh khắc.',
+      );
+      expect(
+        sauGop?.aimPlaneId,
+        isNot(sauGop?.diagnostics?.points.single.planeId),
+        reason:
+            'Gói bày ra hai định danh khác nhau và KHÔNG hoà giải chúng. Sau '
+            'một lượt gộp, "khác nhau" có thể là báo động nhầm — chiều sai an '
+            'toàn, vì app còn thấy được. Chiều kia im lặng.',
+      );
+    });
+
+    test('planeId của điểm sai kiểu hay rỗng về null, không ném', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'measured',
+          'mm': 400.0,
+          'tolMm': 8.0,
+          'diagnostics': {
+            'points': [
+              {'target': 'existingPlaneGeometry', 'planeId': 7},
+              {'target': 'existingPlaneGeometry', 'planeId': ''},
+            ],
+          },
+        });
+      }, returnsNormally);
+
+      expect(s?.diagnostics?.points, hasLength(2));
+      expect(s?.diagnostics?.points[0].planeId, isNull);
+      expect(
+        s?.diagnostics?.points[1].planeId,
+        isNull,
+        reason:
+            'Hai chuỗi rỗng bằng nhau. Để chúng đi tiếp là hai điểm bất kỳ đọc '
+            'ra "cùng một mặt phẳng" — im lặng, và về phía "yên tâm".',
+      );
+      expect(
+        s?.diagnostics?.points[0].target,
+        ArRaycastTarget.existingPlaneGeometry,
+        reason: 'một định danh hỏng không được kéo theo cả lai lịch của điểm',
+      );
     });
 
     test('overshootMm của điểm sai kiểu hay vô cực về null, không ném', () {

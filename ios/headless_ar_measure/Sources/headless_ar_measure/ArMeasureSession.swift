@@ -143,6 +143,21 @@ struct ArPointDiagnostics {
   /// 0° là tia lướt sát mặt.
   let rayAngleDeg: Double?
 
+  /// MẶT PHẲNG NÀO — `ARPlaneAnchor.identifier.uuidString` của mặt phẳng điểm
+  /// này rơi lên.
+  ///
+  /// `nil` khi tia trúng một mặt ƯỚC LƯỢNG: tầng ấy không có `ARPlaneAnchor`
+  /// nào, và `nil` ở đó là một SỰ THẬT — "không có mặt phẳng" — phải phân biệt
+  /// được với "có mặt phẳng, và là một mặt phẳng khác".
+  ///
+  /// Chỉ để SO SÁNH BẰNG NHAU. Gói không kết luận "hai đầu mút có cùng mặt
+  /// phẳng không" — cùng một ranh giới với [overshootMm]: gói trả sự thật đo
+  /// được, app quyết.
+  ///
+  /// Là định danh **lúc chấm**, và không đường nào viết lại nó. Xem
+  /// [ArMeasureSession.planeId(of:)].
+  let planeId: String?
+
   /// `nil` khi tia trúng một mặt ƯỚC LƯỢNG — không có `ARPlaneAnchor` nào.
   let planeAlignment: ArPlaneAlignment?
   let planeWidthMm: Double?
@@ -167,6 +182,7 @@ struct ArPointDiagnostics {
     if let sessionAgeMs { map["sessionAgeMs"] = sessionAgeMs }
     if let cameraDistanceMm { map["cameraDistanceMm"] = cameraDistanceMm }
     if let rayAngleDeg { map["rayAngleDeg"] = rayAngleDeg }
+    if let planeId { map["planeId"] = planeId }
     if let planeAlignment { map["planeAlignment"] = planeAlignment.rawValue }
     if let planeWidthMm { map["planeWidthMm"] = planeWidthMm }
     if let planeHeightMm { map["planeHeightMm"] = planeHeightMm }
@@ -235,9 +251,10 @@ private enum ArReticleProbe {
   case skipped
 
   /// Trúng, kèm vị trí trong hệ toạ độ thế giới, TẦNG tia đã trúng, quãng vượt
-  /// biên nếu tầng ấy là tầng ngoại suy, và GÓC của tia so với mặt phẳng ấy.
+  /// biên nếu tầng ấy là tầng ngoại suy, GÓC của tia so với mặt phẳng ấy, và
+  /// ĐỊNH DANH của chính mặt phẳng ấy.
   ///
-  /// Cả bốn đi kèm chứ không suy lại sau: chúng chỉ tồn tại trong
+  /// Cả năm đi kèm chứ không suy lại sau: chúng chỉ tồn tại trong
   /// `ARRaycastResult` của đúng lượt dò này, và ba tầng mang ba mức tin cậy
   /// khác hẳn nhau — mặt phẳng ARKit đã xác nhận, mặt phẳng nó vừa đoán ra
   /// quanh tia, và một mặt phẳng đã dò được kéo dài ra ngoài biên của nó.
@@ -246,11 +263,15 @@ private enum ArReticleProbe {
   /// mà lượt bắn này trúng, từ CÙNG tư thế camera. Đo lại ở bước sau là đo một
   /// tia khác — tay người dùng đã nhúc nhích — và con số ra được vẫn là một số
   /// độ trông bình thường.
+  ///
+  /// Định danh cũng vậy, và mạnh hơn: mặt phẳng có thể đã lớn lên hoặc bị GỘP
+  /// với mặt khác giữa hai lượt, nên hỏi lại sau là hỏi về một thế giới khác.
   case hit(
     point: SIMD3<Float>,
     target: ArRaycastTarget?,
     overshootMm: Double?,
-    rayAngleDeg: Double?)
+    rayAngleDeg: Double?,
+    planeId: String?)
 
   /// Đã dò và không trúng gì.
   case missed
@@ -823,6 +844,20 @@ final class ArMeasureSession: NSObject {
   /// đúng cái tầng người ta tin nhất.
   private var aimRayAngleDeg: Double?
 
+  /// Định danh mặt phẳng tia ĐANG ngắm trúng. `nil` là không có mặt phẳng nào —
+  /// tia trượt, hoặc trúng một mặt ƯỚC LƯỢNG.
+  ///
+  /// Lấy mẫu CÙNG lượt, CÙNG lưới nhịp với ba trường trên: bốn thứ chỉ có nghĩa
+  /// khi chúng nói về cùng một lượt raycast.
+  ///
+  /// **Khác cái van, và khác cả góc**: van chỉ có nghĩa ở tầng ngoại suy, góc
+  /// có nghĩa ở mọi tầng CÓ mặt phẳng, còn định danh có nghĩa ở đúng những tầng
+  /// có `ARPlaneAnchor` — tức là hai tầng, không phải ba. Tầng ước lượng không
+  /// neo mặt phẳng nó vừa đoán ra vào đâu cả, và `nil` ở đó là sự thật.
+  ///
+  /// Xem [planeId(of:)] để biết vì sao nó là định danh LÚC BẮN.
+  private var aimPlaneId: String?
+
   /// Lần LẤY MẪU cờ ngắm gần nhất, để giãn nhịp đổi hình tâm ngắm.
   ///
   /// Mốc RIÊNG, không mượn [lastAimProbeAt]: ở nhánh đang có đoạn thẳng sống,
@@ -885,6 +920,7 @@ final class ArMeasureSession: NSObject {
   private var lastAimTarget: ArRaycastTarget?
   private var lastAimOvershootMm: Double?
   private var lastAimRayAngleDeg: Double?
+  private var lastAimPlaneId: String?
   private var lastFeatureCensus: ArFeatureCensus?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
@@ -1506,6 +1542,51 @@ final class ArMeasureSession: NSObject {
     }
   }
 
+  /// ĐỊNH DANH của mặt phẳng một lượt raycast đã trúng. `nil` là không có mặt
+  /// phẳng nào.
+  ///
+  /// **Vì sao trường này tồn tại, và vì sao nó không suy được từ thứ đã có.**
+  /// Hai cảnh hỏng trên máy thật, cả hai lọt qua sạch chín trường chẩn đoán:
+  ///
+  /// 1. Điểm cuối lơ lửng trên tường nằm trên mặt phẳng MẶT BÀN kéo dài gần hai
+  ///    mét (`overshootMm` +1946), nên `planeAlignment` của nó vẫn `horizontal`
+  ///    y hệt điểm đầu.
+  /// 2. Điểm bị bắt xuống dưới chân bàn rơi lên mặt SÀN, vì lúc ấy mặt bàn chưa
+  ///    được dò. Sàn và mặt bàn ĐỀU ngang.
+  ///
+  /// Phương giống nhau, tầng giống nhau, bề rộng không nói được gì. Mọi phép
+  /// suy từ chúng trả lời "cùng mặt phẳng" ở đúng hai cảnh phải phân biệt.
+  ///
+  /// **Trả `uuidString` ĐẦY ĐỦ, không rút gọn.** Giá trị này chỉ để SO SÁNH
+  /// BẰNG NHAU, nên rút gọn nghe có vẻ vô hại — nhưng thứ mua được là vài chục
+  /// byte mỗi mẫu, còn cái giá là một xác suất đụng độ: hai mặt phẳng khác nhau
+  /// đọc ra một giá trị, và app kết luận "cùng mặt phẳng" ở đúng chỗ nó phải
+  /// kêu. Không lỗi nào nổ, và chuỗi in ra vẫn trông hợp lệ.
+  ///
+  /// **Là định danh LÚC BẮN, và không đường nào viết lại nó.** ARKit GỘP mặt
+  /// phẳng: hai `ARPlaneAnchor` nhập một, anchor bị nuốt đi qua `didRemove`,
+  /// nên một định danh lưu từ lúc chấm có thể trỏ vào một mặt phẳng không còn
+  /// tồn tại. Gói KHÔNG đuổi theo lượt gộp, và đây là lý do:
+  ///
+  /// * ARKit không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO.
+  ///   `session(_:didRemove:)` chỉ nói "cái này mất rồi". Dựng lại ánh xạ ấy
+  ///   đòi một phép đoán hình học (mặt phẳng sống sót nào bao lấy mặt phẳng
+  ///   cũ), và một cú đoán sai in ra đúng chữ "cùng mặt phẳng" mà cả trường này
+  ///   sinh ra để chặn — một câu trả lời sai IM LẶNG, tệ hơn hẳn một câu trả
+  ///   lời cũ mà trung thực.
+  /// * [adoptUpdatedAnchors] KHÔNG cùng một chuyện, và chỗ khác nhau chính là
+  ///   lý do: nó thay ĐỐI TƯỢNG anchor cho CÙNG một `identifier` mà chính ARKit
+  ///   trao lại — không có phép đoán nào. Đuổi theo lượt gộp là bịa ra một ánh
+  ///   xạ danh tính ARKit chưa bao giờ nói.
+  /// * Chiều sai cũng khác nhau. Để nguyên thì sau một lượt gộp, hai điểm trên
+  ///   thứ vật lý là MỘT mặt bàn có thể khai hai định danh — app báo động nhầm,
+  ///   và người dùng thấy được để bỏ qua. Đuổi theo lượt gộp mà đoán sai thì
+  ///   app im lặng nói "cùng mặt phẳng", đúng cái hỏng đã xảy ra hai lần trên
+  ///   máy thật.
+  private static func planeId(of hit: ARRaycastResult) -> String? {
+    (hit.anchor as? ARPlaneAnchor)?.identifier.uuidString
+  }
+
   /// Góc giữa một tia ngắm và MẶT PHẲNG nó trúng, độ. `nil` là không đo được.
   ///
   /// Một hàm dùng chung, không phải hai lượt tính chép ra hai chỗ: cùng một
@@ -1566,6 +1647,12 @@ final class ArMeasureSession: NSObject {
         from: cameraPosition, hitTransform: hit.result.worldTransform)
     }
 
+    // Định danh mặt phẳng, qua CÙNG hàm mà tia đang ngắm dùng — không cast lại
+    // tại chỗ. Cùng một luật với [raycastTarget(of:)] và [rayAngleDeg]: hai bản
+    // chép lệch nhau thì tâm ngắm và dải chẩn đoán khai hai mặt phẳng khác nhau
+    // cho cùng một lượt raycast, và cả hai đều là một chuỗi trông hợp lệ.
+    let planeId = Self.planeId(of: hit.result)
+
     var planeAlignment: ArPlaneAlignment?
     var planeWidthMm: Double?
     var planeHeightMm: Double?
@@ -1600,6 +1687,7 @@ final class ArMeasureSession: NSObject {
       sessionAgeMs: sessionAgeMs,
       cameraDistanceMm: cameraDistanceMm,
       rayAngleDeg: rayAngleDeg,
+      planeId: planeId,
       planeAlignment: planeAlignment,
       planeWidthMm: planeWidthMm,
       planeHeightMm: planeHeightMm,
@@ -1701,7 +1789,12 @@ final class ArMeasureSession: NSObject {
       overshootMm: hit.overshootMm,
       rayAngleDeg: Self.rayAngleDeg(
         from: SIMD3<Float>(camColumn.x, camColumn.y, camColumn.z),
-        hitTransform: hit.result.worldTransform))
+        hitTransform: hit.result.worldTransform),
+      // Định danh của mặt phẳng ĐANG bị ngắm, đọc từ chính lượt bắn này qua
+      // cùng một hàm mà `makeDiagnostics` dùng. Hỏi lại ở bước sau là hỏi về
+      // một thế giới khác: ARKit có thể đã cho mặt phẳng ấy lớn lên, hoặc đã
+      // GỘP nó với mặt khác, giữa hai lượt.
+      planeId: Self.planeId(of: hit.result))
   }
 
   /// Đếm điểm đặc trưng thô của một khung hình: tổng, và số nằm quanh tia ngắm.
@@ -1790,6 +1883,7 @@ final class ArMeasureSession: NSObject {
     let wasTarget = aimTarget
     let wasOvershoot = aimOvershootMm
     let wasRayAngle = aimRayAngleDeg
+    let wasPlaneId = aimPlaneId
     let wasCensus = featureCensus
 
     switch probe {
@@ -1803,11 +1897,12 @@ final class ArMeasureSession: NSObject {
       aimTarget = nil
       aimOvershootMm = nil
       aimRayAngleDeg = nil
+      aimPlaneId = nil
       featureCensus = nil
       lastAimSampleAt = 0
     case .skipped:
       break
-    case .hit(_, let target, let overshootMm, let rayAngleDeg):
+    case .hit(_, let target, let overshootMm, let rayAngleDeg, let planeId):
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       // Trúng mà ARKit trả một tầng lạ (một giá trị thêm ở bản iOS sau) vẫn là
@@ -1826,6 +1921,11 @@ final class ArMeasureSession: NSObject {
       // Nó chỉ đòi một điều — có trúng một mặt phẳng nào đó để mà đo góc so với
       // nó — và nhánh này chính là nhánh ấy.
       aimRayAngleDeg = rayAngleDeg
+      // Định danh cũng KHÔNG gác theo tầng, và cũng khác góc: nó tự vắng mặt ở
+      // tầng ước lượng vì tầng ấy không có `ARPlaneAnchor` nào để mà khai tên.
+      // Thêm một lời gác theo tầng ở đây là nói cùng một câu hai lần, và lần
+      // thứ hai sẽ lệch đi ở lượt đầu ai đó đổi bảng tầng.
+      aimPlaneId = planeId
       featureCensus = makeFeatureCensus(from: frame)
     case .missed:
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
@@ -1833,6 +1933,7 @@ final class ArMeasureSession: NSObject {
       aimTarget = nil
       aimOvershootMm = nil
       aimRayAngleDeg = nil
+      aimPlaneId = nil
       // Đếm cả ở nhánh TRƯỢT, và đây mới là nhánh phép đo sinh ra để phục vụ:
       // cảnh đang điều tra là một chuỗi trượt không dứt. Chỉ đếm lúc trúng là
       // đo đúng cái cảnh không cần đo.
@@ -1844,8 +1945,16 @@ final class ArMeasureSession: NSObject {
     // của `publish` không bao giờ được nhìn thấy nó. Cảnh cụ thể: người dùng
     // đứng yên một chỗ và chỉ NGHIÊNG máy — tầng tia không đổi (vẫn cùng mặt
     // phẳng), van không đổi, trạng thái không đổi.
+    // Định danh nằm trong phép so này, và nó KHÔNG thừa dù ba thứ trên đã có
+    // mặt. Cảnh cụ thể là chính cảnh hỏng đã đo được trên máy thật: người dùng
+    // rê tia từ MẶT BÀN xuống SÀN. Hai mặt phẳng khác nhau, nhưng cả hai đều
+    // `horizontal`, cả hai đều ở tầng `existingPlaneGeometry`, van `nil` ở cả
+    // hai, và cầm máy cùng một độ nghiêng thì góc tia cũng bằng nhau. Thứ DUY
+    // NHẤT đổi là định danh — không so ở đây thì lượt gọi này trả `false`, và
+    // `publish` không bao giờ được nhìn thấy nó.
     return wasTarget != aimTarget || wasOvershoot != aimOvershootMm
-      || wasRayAngle != aimRayAngleDeg || wasCensus != featureCensus
+      || wasRayAngle != aimRayAngleDeg || wasPlaneId != aimPlaneId
+      || wasCensus != featureCensus
   }
 
   // MARK: - Trạng thái và số đo
@@ -2133,6 +2242,11 @@ final class ArMeasureSession: NSObject {
     // [aimRayAngleDeg]. Gác góc theo tầng ngoại suy là tắt cảnh báo sượt ở đúng
     // cái tầng người ta tin nhất.
     let aimRayAngleDeg = aimTarget != nil ? self.aimRayAngleDeg : nil
+    // Định danh gác theo cùng một `aimTarget` VỪA CHẶN, y như góc: điều kiện là
+    // "lượt bắn này có trúng gì không". Nó tự vắng mặt ở tầng ước lượng vì tầng
+    // ấy không có `ARPlaneAnchor` — không cần một lời gác thứ hai theo tầng, và
+    // thêm vào là dựng một nguồn sự thật thứ hai về chuyện đã có một chỗ lo.
+    let aimPlaneId = aimTarget != nil ? self.aimPlaneId : nil
 
     // Cùng lời chặn, cùng lý do: [refreshAimTarget] đã xoá phép đếm ở mọi
     // trạng thái khác, nhưng nó chỉ chạy khi CÓ khung hình, còn `publish` tới
@@ -2175,6 +2289,14 @@ final class ArMeasureSession: NSObject {
     // kênh trạng thái từ nay không còn im khi không có gì xảy ra. Đây là giá
     // của một bản ĐO, và nó ra cùng lúc với phép đo — bỏ phép đo là sàn ấy trở
     // lại y như cũ.
+    // Định danh mặt phẳng vào đây từ 0.8.0, và nó KHÔNG đi nhờ được ba khoá
+    // ngắm kia: cảnh nó sinh ra để bắt là cảnh mà chúng đều đứng im. Người dùng
+    // rê tia từ MẶT BÀN xuống SÀN — hai mặt phẳng khác nhau, cùng `horizontal`,
+    // cùng tầng `existingPlaneGeometry`, van `nil` ở cả hai, và cầm máy cùng độ
+    // nghiêng thì góc bằng nhau. `featureCensus` không đỡ được: tài liệu của
+    // chính nó nói nó là phép đo có hạn dùng và sẽ rời gói, và ngày ấy một định
+    // danh không nằm ở đây sẽ đóng băng ở mặt phẳng của lượt đầu — đúng lỗi mà
+    // cái van đã trả giá một lần, chỉ khác kiểu dữ liệu.
     // Van nằm trong điều kiện gộp vì một lẽ RIÊNG, không phải để cho đủ bộ:
     // khi tia đứng ở tầng ngoại suy và người dùng rê máy ra xa mép bàn, `status`
     // đứng im, `limitedReason` là `nil`, `aimTarget` KHÔNG đổi (vẫn ngoại suy),
@@ -2201,7 +2323,8 @@ final class ArMeasureSession: NSObject {
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
       aimTarget == lastAimTarget, featureCensus == lastFeatureCensus,
       aimOvershootMm == lastAimOvershootMm,
-      aimRayAngleDeg == lastAimRayAngleDeg
+      aimRayAngleDeg == lastAimRayAngleDeg,
+      aimPlaneId == lastAimPlaneId
     {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
@@ -2269,6 +2392,17 @@ final class ArMeasureSession: NSObject {
     // sát mặt", đúng cái câu nguy hiểm nhất trường này biết nói.
     if let aimRayAngleDeg {
       sample["aimRayAngleDeg"] = aimRayAngleDeg
+    }
+    // Định danh mặt phẳng của tia ĐANG ngắm. Vắng mặt ở HAI đường, và cả hai
+    // đều là sự thật: tia không trúng gì, hoặc tia trúng một mặt ƯỚC LƯỢNG —
+    // tầng ấy không neo mặt phẳng nó vừa đoán ra vào đâu, nên không có gì để
+    // khai tên. Bù một giá trị giả ở đó là dựng ra đúng kết luận "cùng mặt
+    // phẳng" mà trường này sinh ra để chặn.
+    //
+    // Gói dừng ở đây: nó trả định danh, KHÔNG kết luận "hai đầu mút có cùng
+    // mặt phẳng không". Cùng ranh giới với `aimOvershootMm`.
+    if let aimPlaneId {
+      sample["aimPlaneId"] = aimPlaneId
     }
     // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
     // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
@@ -2339,6 +2473,7 @@ final class ArMeasureSession: NSObject {
     lastAimTarget = aimTarget
     lastAimOvershootMm = aimOvershootMm
     lastAimRayAngleDeg = aimRayAngleDeg
+    lastAimPlaneId = aimPlaneId
     lastFeatureCensus = featureCensus
     lastMm = mm
     lastEmitAt = now

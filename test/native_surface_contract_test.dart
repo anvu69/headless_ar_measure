@@ -1034,6 +1034,196 @@ void main() {
     });
   });
 
+  /// Định danh mặt phẳng — vào từ 0.8.0.
+  ///
+  /// Nó tồn tại vì hai cảnh hỏng trên máy thật, và cả hai lọt qua SẠCH chín
+  /// trường chẩn đoán đã có:
+  ///
+  /// 1. Điểm cuối lơ lửng trên tường nằm trên mặt phẳng MẶT BÀN kéo dài gần hai
+  ///    mét (`overshootMm` +1946), nên `planeAlignment` của nó vẫn `horizontal`
+  ///    y hệt điểm đầu.
+  /// 2. Ba lần đầu điểm bị bắt xuống dưới chân bàn — tức mặt SÀN, vì lúc ấy mặt
+  ///    bàn chưa được dò. Sàn và mặt bàn ĐỀU ngang.
+  ///
+  /// Mọi phép suy từ chín trường cũ trả lời "cùng mặt phẳng" ở đúng hai cảnh
+  /// chúng cần phân biệt, nên phải có một định danh THẬT chứ không phải một
+  /// phép suy. Bên Swift thứ cần đã nằm sẵn ngay chỗ tính van:
+  /// `hit.anchor as? ARPlaneAnchor`.
+  ///
+  /// Cả nhóm canh dạng hỏng riêng của một trường ĐỊNH DANH: nó vẫn in ra một
+  /// chuỗi trông hợp lệ trong khi hai mặt phẳng khác nhau đụng độ cùng một giá
+  /// trị — và lúc ấy app kết luận "cùng mặt phẳng" ở đúng chỗ nó phải kêu.
+  group('định danh mặt phẳng', () {
+    test('định danh đọc từ MỘT chỗ, dùng chung cho tia ngắm và điểm đã chấm', () {
+      expect(
+        sessionSource,
+        contains(
+          'private static func planeId(of hit: ARRaycastResult) -> String?',
+        ),
+        reason:
+            'Cùng một luật với `raycastTarget(of:)` và `rayAngleDeg(from:...)`: '
+            'MỘT phép dịch dùng chung cho tia ĐANG ngắm và cho chẩn đoán của '
+            'một điểm ĐÃ chấm. Hai bản chép lệch nhau thì tâm ngắm và dải chẩn '
+            'đoán khai hai mặt phẳng khác nhau cho cùng một lượt raycast, và cả '
+            'hai đều là một chuỗi trông hợp lệ.',
+      );
+
+      for (final noiGoi in [
+        'private func makeDiagnostics(for hit: ArSurfaceHit)',
+        'private func probeReticle(now: TimeInterval, frame: ARFrame)',
+      ]) {
+        expect(
+          _withoutComments(_swiftMethodBody(sessionSource, noiGoi)),
+          contains('Self.planeId('),
+          reason:
+              '`$noiGoi` tự cast `ARPlaneAnchor` lấy id thay vì gọi hàm chung '
+              'là dựng bản chép thứ hai ngay tại chỗ luật này cấm.',
+        );
+      }
+    });
+
+    test('định danh là uuidString ĐẦY ĐỦ, không rút gọn và không băm', () {
+      final body = _withoutComments(
+        _swiftMethodBody(
+          sessionSource,
+          'private static func planeId(of hit: ARRaycastResult) -> String?',
+        ),
+      );
+
+      expect(
+        body,
+        contains('.identifier.uuidString'),
+        reason:
+            '`UUID` là dữ liệu định danh, và `uuidString` là giá trị đầy đủ của '
+            'nó. Gói bắn nguyên chuỗi ấy: nó chỉ để SO SÁNH BẰNG NHAU, nên thứ '
+            'duy nhất mua được bằng cách rút gọn là vài chục byte mỗi mẫu — và '
+            'cái giá là một xác suất đụng độ, tức là hai mặt phẳng khác nhau '
+            'đọc ra "cùng một mặt phẳng", đúng kết luận sai mà trường này sinh '
+            'ra để chặn.',
+      );
+
+      for (final catGon in [
+        'prefix(',
+        'suffix(',
+        'dropLast(',
+        'dropFirst(',
+        'hashValue',
+        'hash(',
+      ]) {
+        expect(
+          body,
+          isNot(contains(catGon)),
+          reason:
+              '`$catGon` trong hàm định danh là một phép rút gọn. Nó không bao '
+              'giờ nổ, không bao giờ in ra gì lạ, và nó hỏng đúng một lần trong '
+              'nhiều nghìn lượt — ở đúng cái lượt hai mặt phẳng đụng độ.',
+        );
+      }
+    });
+
+    test('hai đường định danh đi lên Dart, và Dart đọc cả hai', () {
+      expect(
+        sessionSource,
+        contains('sample["aimPlaneId"]'),
+        reason: 'định danh của tia ĐANG ngắm — thứ tâm ngắm đọc trước cú bấm',
+      );
+      expect(
+        dartSource,
+        contains("raw['aimPlaneId']"),
+        reason: 'Swift vẫn gửi, và không ai nhận.',
+      );
+      expect(
+        sessionSource,
+        contains('map["planeId"]'),
+        reason:
+            'định danh của một điểm ĐÃ chấm. Thiếu nó thì câu hỏi "hai đầu mút '
+            'có cùng mặt phẳng không" không trả lời được sau cú bấm thứ hai — '
+            'mà đó đúng là lúc nó được hỏi.',
+      );
+      expect(dartSource, contains("raw['planeId']"));
+    });
+
+    test('định danh của tia ngắm KHÔNG bị bộ giãn nhịp nuốt', () {
+      expect(
+        sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        contains('aimPlaneId == lastAimPlaneId'),
+        reason:
+            'Cảnh cụ thể, và nó chính là cảnh hỏng số 2: người dùng rê tia từ '
+            'MẶT BÀN xuống SÀN. Cả hai đều `horizontal`, cả hai đều ở tầng '
+            '`existingPlaneGeometry`, `status` đứng im, `limitedReason` là '
+            '`nil`, van là `nil` ở cả hai, và cầm máy cùng một độ nghiêng thì '
+            'góc tia cũng bằng nhau. Thứ DUY NHẤT đổi là định danh. Không đưa '
+            'nó vào điều kiện gộp thì mẫu ấy không bao giờ được bắn, và app đọc '
+            'mãi tên mặt phẳng cũ. `featureCensus` không đỡ được chuyện này: '
+            'tài liệu của chính nó nói nó là một phép đo có hạn dùng và sẽ rời '
+            'gói.',
+      );
+    });
+
+    test('định danh ghi đúng MỘT lần, lúc chấm — không đường nào viết lại', () {
+      final khongChuThich = _withoutComments(sessionSource);
+
+      expect(
+        RegExp(
+          r'pointDiagnostics\[[^\]]+\]\s*=',
+        ).allMatches(khongChuThich).length,
+        1,
+        reason:
+            'Chỉ `placePoint` được ghi vào khối chẩn đoán, và ghi đúng lúc chấm. '
+            'Một lượt ghi thứ hai ở bất cứ đâu là một đường viết lại định danh '
+            'sau cú bấm — mà đó chính là quyết định gói đã bác: ARKit GỘP mặt '
+            'phẳng và không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO, nên '
+            'mọi lượt viết lại là một phép đoán, và một cú đoán sai in ra đúng '
+            'chữ "cùng mặt phẳng".',
+      );
+
+      expect(
+        _withoutComments(
+          _swiftMethodBody(
+            sessionSource,
+            'private func adoptUpdatedAnchors(_ updated: [ARAnchor])',
+          ),
+        ),
+        isNot(contains('pointDiagnostics')),
+        reason:
+            '`adoptUpdatedAnchors` KHÔNG cùng một chuyện với lượt gộp, và chỗ '
+            'khác nhau là toàn bộ lý do gói để nguyên định danh: nó thay ĐỐI '
+            'TƯỢNG anchor cho CÙNG một `identifier` mà chính ARKit trao lại — '
+            'không có phép đoán nào. Đuổi theo lượt gộp thì phải bịa ra một ánh '
+            'xạ danh tính mà ARKit chưa bao giờ nói.',
+      );
+
+      expect(
+        dartSource,
+        contains('định danh **lúc chấm**'),
+        reason:
+            'Hành vi đã chọn phải nằm trong tài liệu của chính trường ấy. Hai '
+            'cách xử lượt gộp cho hành vi KHÁC NHAU ở đúng cảnh mặt bàn vừa dò '
+            'xong, nên người đọc phải biết mình đang cầm cách nào.',
+      );
+    });
+
+    test('gói trả định danh, KHÔNG kết luận cùng hay khác', () {
+      for (final ketLuan in [
+        'samePlane',
+        'isSamePlane',
+        'sharesPlane',
+        'planesMatch',
+        'coplanar',
+      ]) {
+        expect(
+          sessionSource + dartSource,
+          isNot(contains(ketLuan)),
+          reason:
+              'Cùng một ranh giới với `overshootMm`: gói trả sự thật đo được, '
+              'app quyết. "Cùng mặt phẳng hay không" phụ thuộc việc app đang đo '
+              'cái gì — sau một lượt gộp, hai định danh khác nhau có thể vẫn là '
+              'một mặt bàn — và gói không biết điều đó.',
+        );
+      }
+    });
+  });
+
   /// PHÉP ĐO của 0.5.0, phục vụ một quyết định đang treo: có nên tự khớp mặt
   /// phẳng bằng RANSAC trên `rawFeaturePoints` thay cho raycast của ARKit hay
   /// không.
@@ -1153,7 +1343,8 @@ void main() {
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
           'aimOvershootMm == lastAimOvershootMm, '
-          'aimRayAngleDeg == lastAimRayAngleDeg {',
+          'aimRayAngleDeg == lastAimRayAngleDeg, '
+          'aimPlaneId == lastAimPlaneId {',
         ),
         reason:
             'ĐÂY là ca quyết định của cả phép đo, và nó canh đúng cảnh hỏng '
@@ -1285,7 +1476,8 @@ void main() {
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
           'aimOvershootMm == lastAimOvershootMm, '
-          'aimRayAngleDeg == lastAimRayAngleDeg {',
+          'aimRayAngleDeg == lastAimRayAngleDeg, '
+          'aimPlaneId == lastAimPlaneId {',
         ),
         reason:
             'Người dùng đứng yên một chỗ và chỉ NGHIÊNG máy: `status` đứng im, '
