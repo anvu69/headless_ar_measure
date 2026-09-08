@@ -144,6 +144,40 @@ happened:
 missing plugin, a disposed view. Never `missed`: inviting someone to keep
 moving the phone will not revive a dead channel.
 
+### Grazing is a number, and it arrives before the tap
+
+`ArMeasureSample.aimRayAngleDeg` is the angle between the aiming ray and the
+**surface** it is currently on: 90° is dead-on, 0° is grazing. Since 0.7.0 it
+is sampled on the same raycast, at the same 10Hz, as `aimTarget` and
+`aimOvershootMm`.
+
+It exists because grazing is the fastest-growing term in a measurement's
+tolerance, and it sits in the *denominator*:
+
+```
+ε = d · Δu / (fx · sin θ)
+```
+
+At 0.6m with 2px of aiming error, that is 0.83mm at θ=90°, 4.00mm at θ=12° and
+9.55mm at θ=5° — and crouching low to sight along a table edge is exactly how
+people hold a phone to measure one. `ArPointDiagnostics.rayAngleDeg` has
+carried the same number for a placed point since 0.3.0, but a warning built on
+that one arrives **after** the tap it should have prevented.
+
+Unlike `aimOvershootMm`, it is meaningful at **every** tier. A ray grazing a
+confirmed plane at 4° is still grazing at 4°; gating the angle behind the
+extrapolation tier would silence the warning on the tier people trust most. It
+is `null` only when the ray hits nothing — there is no surface to measure an
+angle against — and on a native build older than the field.
+
+The other half of that formula is `fx`, and the package supplies it too:
+`ArMeasureDiagnostics.camera` — see "The lens is not a constant". `d` is
+`cameraDistanceMm` for a placed point; there is **no live camera distance** for
+an unplaced one, so a pre-tap warning has to substitute its own working range.
+`Δu` is yours: the package does not know it, does not compute `ε`, and sets no
+threshold. Where "too grazing" falls depends on what the app is measuring —
+the same boundary as `overshootMm`.
+
 ### Extrapolation announces itself
 
 Since 0.6.0 the ray has a **third** tier, tried last: `.existingPlaneInfinite`,
@@ -260,7 +294,7 @@ field.
 | `tracking` | raw ARKit tracking state at the tap. Six values — the five `.limited` reasons are **not** collapsed into one word |
 | `sessionAgeMs` | milliseconds since the last `run(...)`. Resets with the coordinate system, so it answers "was the session still warming up?" |
 | `cameraDistanceMm` | camera centre to the placed point |
-| `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing |
+| `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing. `ArMeasureSample.aimRayAngleDeg` is the same number for the ray you are aiming *now* |
 | `planeAlignment`, `planeWidthMm`, `planeHeightMm` | the `ARPlaneAnchor` that was hit, if any. All three `null` when the hit landed on an estimated plane |
 | `overshootMm` | how far outside that plane's real boundary the point landed. Non-`null` **only** at `existingPlaneInfinite` — see below |
 
@@ -279,6 +313,11 @@ material a plane fit could use? — and it is expected to be removed once that i
 answered. `0` and `null` mean different things: `0` is an empty cloud, `null` is
 a build that was not asked. See the 0.5.0 CHANGELOG entry, which carries the
 reasoning behind all three constants and the emit-rate cost.
+
+`ArMeasureDiagnostics.camera` (0.7.0) sits there too and is the one block that
+is **never** gated by session state: it describes the device, not an aim, and
+you need it most at the two moments the aim gates would cut — once both points
+are down, and before any point exists. See "The lens is not a constant".
 
 Why it exists: a tile edge measured 382mm against a true 400, two tiles measured
 795 against 800, and every explanation anyone proposed fitted both numbers
@@ -388,6 +427,39 @@ change exactly one thing. See the 0.4.1 CHANGELOG entry for the numbers.
 `config.videoFormat.framesPerSecond` once at `run`, never updated. A session
 throttled down to 20fps still reports 30. Label it as nominal wherever you show
 it, and count frames yourself if you need the delivered rate.
+
+### The lens is not a constant
+
+`ArMeasureDiagnostics.camera` (0.7.0) carries `fx` — focal length in **pixels**,
+`ARFrame.camera.intrinsics[0][0]` — alongside the `width` and `height` of the
+frame it was read from. Both come off one `ARCamera`, in one statement.
+
+`fx` is the other denominator of `ε = d · Δu / (fx · sin θ)`. Without it an app
+cannot compute a millimetre of tolerance, and the only thing left is a guess.
+
+**Do not hardcode it.** 1442 — the number every article about iOS devices quotes
+— is the focal length of the 1920×1440 format. This package picks the largest
+format the device supports, so on a real device it is nearly double. It also
+drifts *within* a session, because the package enables autofocus. And the format
+choice itself is still the unresolved experiment described above, whose own
+revert condition is written down one section up: the day someone acts on it,
+`fx` has to move with it.
+
+That is why `width` and `height` ship in the same block and are **not** borrowed
+from `ArMeasureDiagnostics.video`. That block is a snapshot of the format that
+was *asked for*, taken once at `run`; this one is the frame that actually
+*arrived*, and it is the pixel coordinate system `intrinsics` is expressed in.
+ARKit does not promise the two agree. Reading `fx` against the wrong width is a
+wrong division whose answer is still a plausible number of millimetres.
+
+One unit trap while you are here: `fx` is in image pixels. Measuring `Δu` in
+Flutter points and dividing by it is off by a whole `devicePixelRatio`.
+
+`fx` is deliberately **outside** the sample coalescer. Autofocus nudges it
+almost every frame, so putting it in would turn the status channel into a 60Hz
+firehose for a number nobody watches in real time — you read it once and put it
+in a formula. It rides along on samples already being emitted, exactly like
+`video`.
 
 ## It never throws
 

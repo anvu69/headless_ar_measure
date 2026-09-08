@@ -1,6 +1,6 @@
 name: headless_ar_measure
 description: "Headless iOS AR measurement: a typed stream of status and distance samples over an ARKit camera surface. No text of its own, no exceptions, no network calls."
-version: 0.6.0
+version: 0.7.0
 homepage: https://github.com/anvu69/headless_ar_measure
 repository: https://github.com/anvu69/headless_ar_measure
 issue_tracker: https://github.com/anvu69/headless_ar_measure/issues

@@ -186,7 +186,14 @@ void main() {
         'func session(_ session: ARSession, didUpdate frame: ARFrame)',
       );
 
-      expect(body, contains('let probe = probeReticle(now: now)'));
+      // `frame:` vào từ 0.7.0: lượt dò nay còn đo GÓC của tia, và góc ấy đo so
+      // với tư thế camera của ĐÚNG khung hình đã sinh ra lượt bắn. Đọc
+      // `session.currentFrame` bên trong là dựa vào một giả định đúng nhưng
+      // không ai canh — rằng ARKit đã đặt xong khung mới trước khi gọi vào đây.
+      expect(
+        body,
+        contains('let probe = probeReticle(now: now, frame: frame)'),
+      );
       // `frame:` vào từ 0.5.0: lượt lấy mẫu ngắm nay đọc thêm đám mây điểm thô
       // của ĐÚNG khung hình đã sinh ra lượt dò này. Xem nhóm "đếm điểm đặc
       // trưng quanh tia".
@@ -678,9 +685,13 @@ void main() {
       );
     });
 
+    // Phép tính đã dời khỏi `makeDiagnostics` ở 0.7.0: tia ĐANG ngắm cần đúng
+    // con số ấy trước cú bấm, và hai bản chép của cùng một phép tính là đúng
+    // lớp lỗi mà `raycastTarget(of:)` và `PlaneOvershoot` đã đóng. Luật thì
+    // không đổi một chữ nào — xem nhóm "tiêu cự và góc tia sống".
     test('góc tia đo so với MẶT PHẲNG, không so với pháp tuyến', () {
       expect(
-        _swiftMethodBody(sessionSource, 'private func makeDiagnostics('),
+        _swiftMethodBody(sessionSource, 'private static func rayAngleDeg('),
         contains('asin('),
         reason:
             'Pháp tuyến vuông góc với mặt, nên nhầm `acos` thành `asin` cho ra '
@@ -811,7 +822,6 @@ void main() {
         reason: 'Swift gửi mà Dart không đọc thì dải chẩn đoán vẫn trống.',
       );
     });
-
   });
 
   /// Tầng tia thứ BA — ngoại suy có nhãn. Vào từ 0.6.0.
@@ -849,13 +859,13 @@ void main() {
       expect(
         literal,
         isNotNull,
-        reason: 'không tìm thấy danh sách tầng mục tiêu trong raycastFromReticle',
+        reason:
+            'không tìm thấy danh sách tầng mục tiêu trong raycastFromReticle',
       );
 
-      final tiers = RegExp(r'\.(\w+)')
-          .allMatches(literal!.group(1)!)
-          .map((m) => m.group(1)!)
-          .toList();
+      final tiers = RegExp(
+        r'\.(\w+)',
+      ).allMatches(literal!.group(1)!).map((m) => m.group(1)!).toList();
 
       expect(
         tiers,
@@ -1087,10 +1097,7 @@ void main() {
         contains('featureConeHalfAngleDegrees'),
         reason: 'Nửa góc phải là một hằng số đọc được, không phải một số trần.',
       );
-      for (final name in [
-        'featureRangeNearMeters',
-        'featureRangeFarMeters',
-      ]) {
+      for (final name in ['featureRangeNearMeters', 'featureRangeFarMeters']) {
         expect(
           sessionSource,
           contains(name),
@@ -1145,7 +1152,8 @@ void main() {
           'if !force, status == lastStatus, '
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
-          'aimOvershootMm == lastAimOvershootMm {',
+          'aimOvershootMm == lastAimOvershootMm, '
+          'aimRayAngleDeg == lastAimRayAngleDeg {',
         ),
         reason:
             'ĐÂY là ca quyết định của cả phép đo, và nó canh đúng cảnh hỏng '
@@ -1155,6 +1163,243 @@ void main() {
             'KHÔNG BAO GIỜ chạy. Không đưa phép đếm vào điều kiện gộp này thì '
             'hai con số mới không bao giờ tới Dart ở đúng cái cảnh chúng sinh '
             'ra để đo, và dải chẩn đoán im lặng đọc y hệt "chưa dựng xong".',
+      );
+    });
+  });
+
+  /// Hai con số của 0.7.0, và cả hai chỉ có một việc: nuôi số hạng dung sai mà
+  /// app vừa dựng xong.
+  ///
+  ///     ε = d · Δu / (fx · sin θ)
+  ///
+  /// Sai số hướng ngắm chiếu lên mặt phẳng bị chia cho `sin θ`, với θ là góc
+  /// giữa tia và MẶT phẳng. Ở 0,6 m với lệch 2 điểm ảnh: θ=90° cho 0,83 mm,
+  /// θ=12° cho 4,00 mm, θ=5° cho 9,55 mm — và θ nhỏ là đúng tư thế người ta cầm
+  /// máy khi đo mép bàn.
+  ///
+  /// **Gói KHÔNG tính `ε`, không đặt ngưỡng, không biết `Δu`.** Nó trả đúng hai
+  /// sự thật đo được: tiêu cự bao nhiêu điểm ảnh, góc bao nhiêu độ. Ngưỡng nào
+  /// là "quá sượt" phụ thuộc app đang đo cái gì — cùng một lẽ với `overshootMm`.
+  group('tiêu cự và góc tia sống', () {
+    test(
+      'góc tia tính ở MỘT chỗ, dùng chung cho điểm đã chấm và tia đang ngắm',
+      () {
+        final noComments = _withoutComments(sessionSource);
+
+        expect(
+          noComments,
+          contains('asin('),
+          reason: 'không còn phép tính góc nào trong tệp',
+        );
+        expect(
+          'asin('.allMatches(noComments).length,
+          1,
+          reason:
+              'Hai bản chép của cùng một phép tính góc — một cho điểm ĐÃ chấm, '
+              'một cho tia ĐANG ngắm — lệch nhau thì cảnh báo "ngắm quá sượt" '
+              'hiện lên ở một góc, còn dải chẩn đoán của đúng cú bấm ấy ghi một '
+              'góc khác. Cả hai đều là số độ hợp lệ, và không ai soi ra được. '
+              'Cùng một luật với `raycastTarget(of:)` và với `PlaneOvershoot`.',
+        );
+      },
+    );
+
+    test('góc tia sống đi CÙNG lượt raycast với tầng tia và với van', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
+      );
+
+      expect(
+        body,
+        contains('rayAngleDeg'),
+        reason:
+            'Góc phải đọc từ ĐÚNG lượt bắn đã sinh ra tầng tia và cái van — '
+            'cùng khung hình, cùng mặt phẳng, cùng tia. Mở một lượt bắn thứ hai '
+            'để đo góc là trả tiền hai lần cho cùng một việc, và hai lượt ấy '
+            'trúng hai chỗ khác nhau ngay khi tay người dùng nhúc nhích.',
+      );
+
+      final refresh = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func refreshAimTarget('),
+      );
+      expect(
+        refresh,
+        contains('aimRayAngleDeg = '),
+        reason:
+            'Cùng chỗ, cùng lưới nhịp 10 Hz với `aimTarget` và `aimOvershootMm`. '
+            'Một cái đồng hồ riêng cho góc là ba con số nói về ba khoảnh khắc '
+            'khác nhau trong cùng một mẫu.',
+      );
+    });
+
+    test('góc tia sống gác theo TRÚNG, không gác theo tầng ngoại suy', () {
+      final publish = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func publish('),
+      ).replaceAll(RegExp(r'\s+'), ' ');
+
+      expect(
+        publish,
+        contains(
+          'aimRayAngleDeg = aimTarget != nil ? self.aimRayAngleDeg : nil',
+        ),
+        reason:
+            'Bất biến cũ giữ nguyên: `aimOvershootMm != nil` ⟺ `aimTarget == '
+            '.existingPlaneInfinite`, vì nó nói về một cái biên bị vượt và hai '
+            'tầng kia không vượt biên nào. Góc tia thì khác — một tia sượt 4° '
+            'vào một mặt phẳng ARKit ĐÃ XÁC NHẬN vẫn là một tia sượt 4°. Gác nó '
+            'theo tầng ngoại suy là tắt cảnh báo sượt ở đúng cái tầng người ta '
+            'tin nhất.',
+      );
+      expect(
+        publish,
+        contains(
+          'aimOvershootMm = aimTarget != nil ? self.aimOvershootMm : nil',
+        ),
+        reason: 'và bất biến của van không được đụng tới trong lượt này',
+      );
+    });
+
+    test('góc tia sống đi lên Dart, và Dart đọc', () {
+      expect(sessionSource, contains('sample["aimRayAngleDeg"]'));
+      expect(
+        dartSource,
+        contains("raw['aimRayAngleDeg']"),
+        reason:
+            'Swift gửi mà Dart không đọc thì cảnh báo sượt không bao giờ có.',
+      );
+    });
+
+    /// Ca này KHÔNG thừa dù `featureCensus` đang đổi gần như mỗi lượt lấy mẫu
+    /// và vì thế đang kéo mọi thứ khác đi cùng.
+    ///
+    /// `ArFeatureCensus` là một PHÉP ĐO có hạn dùng — tài liệu của chính nó nói
+    /// *"nó biến mất cùng lúc câu hỏi ấy được trả lời"*. Ngày nó ra khỏi gói,
+    /// một góc tia không nằm trong điều kiện gộp sẽ đóng băng ở giá trị của
+    /// lượt đầu trong khi người dùng vẫn đang nghiêng máy: đúng lỗi mà cái van
+    /// đã trả giá một lần, chỉ khác con số.
+    test('góc tia sống KHÔNG bị bộ giãn nhịp nuốt', () {
+      expect(
+        sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        contains(
+          'if !force, status == lastStatus, '
+          'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
+          'featureCensus == lastFeatureCensus, '
+          'aimOvershootMm == lastAimOvershootMm, '
+          'aimRayAngleDeg == lastAimRayAngleDeg {',
+        ),
+        reason:
+            'Người dùng đứng yên một chỗ và chỉ NGHIÊNG máy: `status` đứng im, '
+            '`limitedReason` là `nil`, `aimTarget` không đổi (vẫn cùng mặt '
+            'phẳng), `mm` là `nil` khi chưa chấm điểm nào, và van cũng không '
+            'đổi. Thứ duy nhất đổi là chính con số này — và nó là con số quyết '
+            'định có cảnh báo hay không.',
+      );
+    });
+
+    /// **`fx` KHÔNG được ghim cứng, và đây là ca canh chuyện đó.**
+    ///
+    /// Con số 1442 mà mọi bài viết dẫn ra là tiêu cự của khuôn 1920×1440. Gói
+    /// chọn khuôn to nhất máy hỗ trợ (3840×2160 trên máy thật), và `fx` co giãn
+    /// theo bề rộng khuôn — nên nó gần gấp đôi. Ghim cứng thì mọi con số dung
+    /// sai lệch đúng một hệ số 2, và cả hai giá trị đều nằm gọn trong khoảng
+    /// "trông hợp lý": vài milimét.
+    ///
+    /// Khuôn hình đổi không phải chuyện xa xôi: khối chọn khuôn là một PHÉP THỬ
+    /// chưa nghiệm thu, và chú thích của chính nó nói **"nhịp khung tụt mà thời
+    /// gian chờ không giảm thì bỏ hẳn đoạn này"**.
+    test('fx đọc từ ARFrame.camera.intrinsics, không từ một hằng số', () {
+      expect(
+        sessionSource,
+        contains('camera.intrinsics'),
+        reason:
+            'Đây là chỗ DUY NHẤT iOS nói ra tiêu cự thật của khuôn đang chạy. '
+            'Mọi con số khác là một con số của máy khác, hoặc của khuôn khác.',
+      );
+      expect(
+        sessionSource,
+        contains('camera.intrinsics[0][0]'),
+        reason:
+            'Cột 0 hàng 0 của ma trận nội tại LÀ `fx`. `[0][1]` là hệ số xiên '
+            '(gần như luôn bằng 0) và `[1][1]` là `fy` — trên máy iOS hai tiêu '
+            'cự gần bằng nhau, nên nhầm cột cho ra một con số vẫn đúng cỡ.',
+      );
+      expect(
+        _withoutComments(
+          _swiftMethodBody(
+            sessionSource,
+            'private func runSession(options: ARSession.RunOptions)',
+          ),
+        ),
+        isNot(contains('intrinsics')),
+        reason:
+            'Đọc `fx` một lần lúc `run` rồi để im là đúng cái lỗi ghim cứng, '
+            'chỉ mặc áo khác: gói bật `isAutoFocusEnabled`, nên tiêu cự nhúc '
+            'nhích theo cự ly lấy nét trong suốt phiên — và khuôn hình thì có '
+            'thể đổi ở lượt `run` sau.',
+      );
+    });
+
+    /// `fx` một mình là một con số không đọc được: 1442 và 2884 cùng là "đúng",
+    /// và cái phân biệt chúng là bề rộng khuôn. Người đọc dải chẩn đoán phải
+    /// thấy cả hai cạnh nhau thì mới hiểu con số, và app muốn quy về khuôn khác
+    /// cũng cần đúng bề rộng ấy.
+    ///
+    /// Bề rộng ấy KHÔNG được mượn của [ArVideoFormat]: khối kia là ảnh chụp lúc
+    /// `run` (khuôn được CẤU HÌNH), khối này là khung hình vừa tới (khuôn đang
+    /// CHẠY). ARKit không hứa giao đúng khuôn đã xin, nên hai thứ lệch được
+    /// thật — và một `fx` đọc trên bề rộng của khối kia là một phép chia sai mà
+    /// kết quả vẫn là một số milimét bình thường.
+    test('fx đi kèm khuôn hình của CHÍNH khung ấy, không mượn của cấu hình', () {
+      expect(
+        sessionSource,
+        contains('camera.imageResolution'),
+        reason:
+            '`ARCamera.imageResolution` là hệ toạ độ điểm ảnh mà `intrinsics` '
+            'được biểu diễn trên đó. `config.videoFormat.imageResolution` là '
+            'khuôn đã XIN, và nó nằm ở khối `video` rồi.',
+      );
+      expect(sessionSource, contains('diagnostics["camera"]'));
+      for (final key in ['"fx"']) {
+        expect(sessionSource, contains(key));
+      }
+      expect(
+        dartSource,
+        contains("raw['camera']"),
+        reason: 'Swift gửi mà Dart không đọc thì dải chẩn đoán vẫn trống.',
+      );
+      expect(
+        dartSource,
+        contains("raw['fx']"),
+        reason: 'và không có `fx` thì app không tính nổi một milimét nào',
+      );
+    });
+
+    /// `fx` KHÔNG nằm trong điều kiện gộp, và đó là một lựa chọn ngược với góc
+    /// tia ngay bên trên — nên nó phải được ghi lại.
+    ///
+    /// Lấy nét tự động làm `fx` nhúc nhích gần như mỗi khung hình. Đưa nó vào
+    /// điều kiện gộp là biến kênh trạng thái thành một cái vòi 60 Hz vì một con
+    /// số mà **không ai nhìn theo thời gian thực** — app đọc nó một lần để đặt
+    /// vào công thức. Nó đi nhờ mọi mẫu đã được bắn, y như khối `video`.
+    test('fx KHÔNG nằm trong điều kiện gộp, và đi nhờ mọi mẫu đã bắn', () {
+      expect(
+        sessionSource.replaceAll(RegExp(r'\s+'), ' '),
+        isNot(contains('cameraIntrinsics == lastCameraIntrinsics')),
+        reason:
+            'Lấy nét tự động làm `fx` đổi gần như mỗi khung hình. Đưa vào điều '
+            'kiện gộp là bắn 60 mẫu mỗi giây vì một con số app đọc một lần.',
+      );
+      expect(
+        _withoutComments(
+          _swiftMethodBody(
+            sessionSource,
+            'func session(_ session: ARSession, didUpdate frame: ARFrame)',
+          ),
+        ),
+        contains('frame.camera'),
+        reason:
+            'Chỗ đọc phải là đường khung hình — đó là nơi duy nhất có một '
+            '`ARFrame` để đọc, và là nhịp mà con số này thật sự đổi.',
       );
     });
   });

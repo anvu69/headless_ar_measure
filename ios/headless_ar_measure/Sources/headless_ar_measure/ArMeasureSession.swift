@@ -234,14 +234,23 @@ private enum ArReticleProbe {
   /// Chưa tới nhịp dò kế tiếp. Giữ nguyên mọi thứ của lượt trước.
   case skipped
 
-  /// Trúng, kèm vị trí trong hệ toạ độ thế giới, TẦNG tia đã trúng, và quãng
-  /// vượt biên nếu tầng ấy là tầng ngoại suy.
+  /// Trúng, kèm vị trí trong hệ toạ độ thế giới, TẦNG tia đã trúng, quãng vượt
+  /// biên nếu tầng ấy là tầng ngoại suy, và GÓC của tia so với mặt phẳng ấy.
   ///
-  /// Cả ba đi kèm chứ không suy lại sau: chúng chỉ tồn tại trong
+  /// Cả bốn đi kèm chứ không suy lại sau: chúng chỉ tồn tại trong
   /// `ARRaycastResult` của đúng lượt dò này, và ba tầng mang ba mức tin cậy
   /// khác hẳn nhau — mặt phẳng ARKit đã xác nhận, mặt phẳng nó vừa đoán ra
   /// quanh tia, và một mặt phẳng đã dò được kéo dài ra ngoài biên của nó.
-  case hit(SIMD3<Float>, ArRaycastTarget?, Double?)
+  ///
+  /// Góc đi cùng chỗ này chứ không đi một kênh riêng: nó đo trên CÙNG mặt phẳng
+  /// mà lượt bắn này trúng, từ CÙNG tư thế camera. Đo lại ở bước sau là đo một
+  /// tia khác — tay người dùng đã nhúc nhích — và con số ra được vẫn là một số
+  /// độ trông bình thường.
+  case hit(
+    point: SIMD3<Float>,
+    target: ArRaycastTarget?,
+    overshootMm: Double?,
+    rayAngleDeg: Double?)
 
   /// Đã dò và không trúng gì.
   case missed
@@ -678,6 +687,60 @@ final class ArMeasureSession: NSObject {
     var payload: [String: Any] { ["total": total, "nearRay": nearRay] }
   }
 
+  // MARK: - Thấu kính
+
+  /// Tiêu cự tính bằng ĐIỂM ẢNH, kèm đúng khuôn hình mà nó được biểu diễn trên
+  /// đó. Cả hai đọc từ CÙNG một `ARCamera`, trong cùng một lời gọi.
+  ///
+  /// Có mặt vì app cần một mẫu số: số hạng dung sai của một phép đo AR là
+  /// `ε = d · Δu / (fx · sin θ)`. Gói dừng ở việc trả `fx` và `θ` — nó không
+  /// tính `ε`, không biết `Δu`, không đặt ngưỡng nào. Cùng ranh giới với
+  /// `overshootMm`.
+  ///
+  /// **Vì sao không nhét vào [videoFormat].** Khối kia đọc `config.videoFormat`
+  /// đúng một lần tại `run` — khuôn được XIN. Khối này đọc `ARFrame.camera` —
+  /// khuôn đang CHẠY, và là hệ toạ độ điểm ảnh mà `intrinsics` được biểu diễn
+  /// trên đó. ARKit không hứa hai thứ ấy bằng nhau, và `fx` còn nhúc nhích theo
+  /// lấy nét tự động trong khi khuôn đứng im cả phiên. Trộn chúng là đọc `fx`
+  /// trên một bề rộng không phải bề rộng của nó — một phép chia sai mà kết quả
+  /// vẫn là một con số milimét bình thường.
+  private struct ArCameraIntrinsics {
+    /// `ARFrame.camera.intrinsics[0][0]`. Dương, hữu hạn, hoặc `nil`.
+    ///
+    /// Cột 0 hàng 0 của ma trận nội tại LÀ `fx`. `[0][1]` là hệ số xiên (gần
+    /// như luôn bằng 0) và `[1][1]` là `fy` — trên máy iOS hai tiêu cự gần bằng
+    /// nhau, nên nhầm cột vẫn cho ra một con số đúng cỡ.
+    ///
+    /// `0` không đi ra kênh: nó không phải một sự thật ("thấu kính dài không
+    /// điểm ảnh" là một câu vô nghĩa), và nó hỏng ở chỗ nguy hiểm nhất — dưới
+    /// gạch chia.
+    let fx: Double?
+
+    /// `ARFrame.camera.imageResolution`, tính bằng điểm ảnh.
+    let width: Int?
+    let height: Int?
+
+    init(camera: ARCamera) {
+      let rawFx = Double(camera.intrinsics[0][0])
+      fx = (rawFx.isFinite && rawFx > 0) ? rawFx : nil
+
+      // `isFinite` trước `Int(...)`, không chỉ `> 0`: `Int(CGFloat.infinity)`
+      // là một lượt bẫy (trap) chứ không phải một giá trị lạ, và gói này không
+      // được phép ném.
+      let size = camera.imageResolution
+      width = (size.width.isFinite && size.width > 0) ? Int(size.width) : nil
+      height = (size.height.isFinite && size.height > 0) ? Int(size.height) : nil
+    }
+
+    var payload: [String: Any] {
+      var map: [String: Any] = [:]
+      if let fx { map["fx"] = fx }
+      if let width { map["width"] = width }
+      if let height { map["height"] = height }
+      return map
+    }
+  }
+
   // MARK: - Trạng thái
 
   /// Hai điểm đã chấm, theo thứ tự chấm. Nhiều nhất hai.
@@ -746,6 +809,20 @@ final class ArMeasureSession: NSObject {
   /// Câu ấy chỉ đúng khi cả hai nói về cùng một lượt raycast.
   private var aimOvershootMm: Double?
 
+  /// Góc của tia ĐANG ngắm so với mặt phẳng nó trúng, độ. `nil` là không trúng
+  /// gì — không có mặt phẳng nào để đo góc so với nó.
+  ///
+  /// Lấy mẫu CÙNG lượt, CÙNG lưới nhịp với [aimTarget] và [aimOvershootMm], và
+  /// phải thế: ba con số đọc chung một câu về một lượt bắn.
+  ///
+  /// **Khác cái van ở một chỗ, và chỗ ấy là lý do trường này tồn tại riêng**:
+  /// van chỉ có nghĩa ở tầng ngoại suy, còn góc có nghĩa ở MỌI tầng. Một tia
+  /// sượt 4° vào một mặt phẳng ARKit đã xác nhận vẫn là một tia sượt 4°, và
+  /// dung sai của nó nở ra đúng như thế — `sin θ` nằm ở mẫu số của số hạng dung
+  /// sai mà app dựng lên. Gộp góc vào lối gác của van là tắt cảnh báo sượt ở
+  /// đúng cái tầng người ta tin nhất.
+  private var aimRayAngleDeg: Double?
+
   /// Lần LẤY MẪU cờ ngắm gần nhất, để giãn nhịp đổi hình tâm ngắm.
   ///
   /// Mốc RIÊNG, không mượn [lastAimProbeAt]: ở nhánh đang có đoạn thẳng sống,
@@ -796,10 +873,18 @@ final class ArMeasureSession: NSObject {
   /// nào. Xem [makeConfiguration] và [runSession].
   private var videoFormat: [String: Any]?
 
+  /// Thấu kính của khung hình gần nhất. `nil` là chưa có khung nào.
+  ///
+  /// Khác [videoFormat] ở nhịp: khuôn hình đọc MỘT lần tại `run`, còn con số
+  /// này đọc lại ở MỖI khung hình — gói bật lấy nét tự động, nên tiêu cự nhúc
+  /// nhích theo cự ly lấy nét trong suốt phiên. Xem [ArCameraIntrinsics].
+  private var cameraIntrinsics: ArCameraIntrinsics?
+
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
   private var lastAimTarget: ArRaycastTarget?
   private var lastAimOvershootMm: Double?
+  private var lastAimRayAngleDeg: Double?
   private var lastFeatureCensus: ArFeatureCensus?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
@@ -1421,6 +1506,44 @@ final class ArMeasureSession: NSObject {
     }
   }
 
+  /// Góc giữa một tia ngắm và MẶT PHẲNG nó trúng, độ. `nil` là không đo được.
+  ///
+  /// Một hàm dùng chung, không phải hai lượt tính chép ra hai chỗ: cùng một
+  /// phép đo phục vụ chẩn đoán của một điểm ĐÃ chấm và cảnh báo sượt của tia
+  /// ĐANG ngắm. Hai bản chép lệch nhau thì cảnh báo hiện lên ở một góc còn dải
+  /// chẩn đoán của đúng cú bấm ấy ghi một góc khác — cả hai đều là số độ hợp
+  /// lệ, và không ai soi ra được. Cùng một luật với [raycastTarget(of:)] và với
+  /// [PlaneOvershoot].
+  ///
+  /// `asin` chứ không `acos`: `dot` cho góc so với PHÁP TUYẾN, mà thứ đọc được
+  /// bằng mắt — và thứ số hạng dung sai của app cần — là góc so với MẶT PHẲNG.
+  /// Hai góc bù nhau, nên nhầm ở đây in 63° ra thành 27°: một con số vẫn hợp
+  /// lệ, vẫn nằm trong 0–90, và không có gì nói ra là mình đang đọc nhầm cái
+  /// nào.
+  ///
+  /// Nhận VỊ TRÍ camera chứ không nhận `ARCamera`: phép tính này không cần biết
+  /// khung hình nào, và chỗ gọi nào cũng đã có sẵn một vị trí trong tay. Hàm
+  /// tĩnh, không đụng trạng thái của phiên.
+  private static func rayAngleDeg(
+    from cameraPosition: SIMD3<Float>, hitTransform: simd_float4x4
+  ) -> Double? {
+    let hitColumn = hitTransform.columns.3
+    let toHit =
+      SIMD3<Float>(hitColumn.x, hitColumn.y, hitColumn.z) - cameraPosition
+    let distance = simd_length(toHit)
+    guard distance > 0 else { return nil }
+
+    // Trục Y của transform mà raycast trả về LÀ pháp tuyến bề mặt (hợp đồng
+    // của `ARRaycastResult`).
+    let n = hitTransform.columns.1
+    let normal = simd_normalize(SIMD3<Float>(n.x, n.y, n.z))
+    let direction = toHit / distance
+    let cosToNormal = min(1, max(0, abs(simd_dot(direction, normal))))
+    let radians = asin(cosToNormal)
+    guard radians.isFinite else { return nil }
+    return Double(radians) * 180 / .pi
+  }
+
   private func makeDiagnostics(for hit: ArSurfaceHit) -> ArPointDiagnostics {
     let target = Self.raycastTarget(of: hit.result)
 
@@ -1434,27 +1557,13 @@ final class ArMeasureSession: NSObject {
     if let camera = sceneView.session.currentFrame?.camera {
       let camColumn = camera.transform.columns.3
       let cameraPosition = SIMD3<Float>(camColumn.x, camColumn.y, camColumn.z)
-      let toHit = hitPosition - cameraPosition
-      let distance = simd_length(toHit)
+      let distance = simd_length(hitPosition - cameraPosition)
       if distance.isFinite {
         cameraDistanceMm = Double(distance) * 1000
       }
-      if distance > 0 {
-        // Trục Y của transform mà raycast trả về LÀ pháp tuyến bề mặt (hợp
-        // đồng của `ARRaycastResult`).
-        let n = hit.result.worldTransform.columns.1
-        let normal = simd_normalize(SIMD3<Float>(n.x, n.y, n.z))
-        let direction = toHit / distance
-        // `asin` chứ không `acos`: `dot` cho góc so với PHÁP TUYẾN, mà thứ đọc
-        // được bằng mắt là góc so với MẶT PHẲNG. Hai góc bù nhau, nên nhầm ở
-        // đây in 63° ra thành 27° — một con số vẫn hợp lệ, vẫn nằm trong 0–90,
-        // và không có gì trên màn nói ra là mình đang đọc nhầm cái nào.
-        let cosToNormal = min(1, max(0, abs(simd_dot(direction, normal))))
-        let radians = asin(cosToNormal)
-        if radians.isFinite {
-          rayAngleDeg = Double(radians) * 180 / .pi
-        }
-      }
+      // Cùng MỘT phép tính với góc của tia đang ngắm — xem [rayAngleDeg(from:hitTransform:)].
+      rayAngleDeg = Self.rayAngleDeg(
+        from: cameraPosition, hitTransform: hit.result.worldTransform)
     }
 
     var planeAlignment: ArPlaneAlignment?
@@ -1547,7 +1656,12 @@ final class ArMeasureSession: NSObject {
   /// gần giống. Kết quả này là một lời hứa về cú bấm sắp tới; hai tia khác nhau
   /// là một lời hứa hão, và nó hỏng theo đúng kiểu tệ nhất — tâm ngắm khoá lại,
   /// người dùng bấm, không có gì xảy ra.
-  private func probeReticle(now: TimeInterval) -> ArReticleProbe {
+  /// `frame` là khung hình ĐÃ sinh ra lượt gọi này, truyền thẳng vào chứ không
+  /// đọc lại `session.currentFrame` bên trong: góc tia đo so với tư thế camera,
+  /// và nó phải là tư thế của đúng khung hình mà lượt bắn này diễn ra trên đó.
+  /// Đọc lại là dựa vào một giả định đúng nhưng không ai canh — rằng ARKit đã
+  /// đặt xong khung mới trước khi gọi vào delegate.
+  private func probeReticle(now: TimeInterval, frame: ARFrame) -> ArReticleProbe {
     // Ngoài hai trạng thái còn chấm được thì cú bấm tới không đặt nổi điểm nào
     // dù tia có trúng hay không — kể cả khi đã đủ hai điểm, lúc mà lượt dò này
     // hết sạch ý nghĩa. KHÔNG dò: một lượt raycast ở đây là công đổ đi.
@@ -1579,7 +1693,15 @@ final class ArMeasureSession: NSObject {
     let column = hit.result.worldTransform.columns.3
     let point = SIMD3<Float>(column.x, column.y, column.z)
     liveHitPoint = point
-    return .hit(point, Self.raycastTarget(of: hit.result), hit.overshootMm)
+
+    let camColumn = frame.camera.transform.columns.3
+    return .hit(
+      point: point,
+      target: Self.raycastTarget(of: hit.result),
+      overshootMm: hit.overshootMm,
+      rayAngleDeg: Self.rayAngleDeg(
+        from: SIMD3<Float>(camColumn.x, camColumn.y, camColumn.z),
+        hitTransform: hit.result.worldTransform))
   }
 
   /// Đếm điểm đặc trưng thô của một khung hình: tổng, và số nằm quanh tia ngắm.
@@ -1667,6 +1789,7 @@ final class ArMeasureSession: NSObject {
   ) -> Bool {
     let wasTarget = aimTarget
     let wasOvershoot = aimOvershootMm
+    let wasRayAngle = aimRayAngleDeg
     let wasCensus = featureCensus
 
     switch probe {
@@ -1679,11 +1802,12 @@ final class ArMeasureSession: NSObject {
       // phép đếm gán cho một khoảnh khắc nó không nói về.
       aimTarget = nil
       aimOvershootMm = nil
+      aimRayAngleDeg = nil
       featureCensus = nil
       lastAimSampleAt = 0
     case .skipped:
       break
-    case .hit(_, let target, let overshootMm):
+    case .hit(_, let target, let overshootMm, let rayAngleDeg):
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       // Trúng mà ARKit trả một tầng lạ (một giá trị thêm ở bản iOS sau) vẫn là
@@ -1697,20 +1821,31 @@ final class ArMeasureSession: NSObject {
       // quãng vượt biên gắn vào một tầng không phải tầng ngoại suy đọc ra một
       // câu vô nghĩa mà vẫn có số.
       aimOvershootMm = aimTarget == .existingPlaneInfinite ? overshootMm : nil
+      // Góc thì KHÔNG gác theo tầng, và đó là chỗ nó khác cái van ngay trên:
+      // một tia sượt 4° vào một mặt phẳng đã xác nhận vẫn là một tia sượt 4°.
+      // Nó chỉ đòi một điều — có trúng một mặt phẳng nào đó để mà đo góc so với
+      // nó — và nhánh này chính là nhánh ấy.
+      aimRayAngleDeg = rayAngleDeg
       featureCensus = makeFeatureCensus(from: frame)
     case .missed:
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       aimTarget = nil
       aimOvershootMm = nil
+      aimRayAngleDeg = nil
       // Đếm cả ở nhánh TRƯỢT, và đây mới là nhánh phép đo sinh ra để phục vụ:
       // cảnh đang điều tra là một chuỗi trượt không dứt. Chỉ đếm lúc trúng là
       // đo đúng cái cảnh không cần đo.
       featureCensus = makeFeatureCensus(from: frame)
     }
 
+    // Góc nằm trong phép so này, và nó phải nằm: lượt gọi này là cái quyết định
+    // `publish` có chạy hay không, nên một con số không được so ở đây thì bộ nén
+    // của `publish` không bao giờ được nhìn thấy nó. Cảnh cụ thể: người dùng
+    // đứng yên một chỗ và chỉ NGHIÊNG máy — tầng tia không đổi (vẫn cùng mặt
+    // phẳng), van không đổi, trạng thái không đổi.
     return wasTarget != aimTarget || wasOvershoot != aimOvershootMm
-      || wasCensus != featureCensus
+      || wasRayAngle != aimRayAngleDeg || wasCensus != featureCensus
   }
 
   // MARK: - Trạng thái và số đo
@@ -1992,6 +2127,12 @@ final class ArMeasureSession: NSObject {
     // biên đi ra kênh mà không có tầng nào đi kèm — một con số nói về một tầng
     // mà mẫu ấy không hề nhắc tới.
     let aimOvershootMm = aimTarget != nil ? self.aimOvershootMm : nil
+    // Góc gác theo cùng một `aimTarget` VỪA CHẶN, và chỉ theo nó: điều kiện là
+    // "có trúng một mặt phẳng nào đó", không phải "trúng tầng ngoại suy". Đây
+    // là chỗ duy nhất góc và van đi khác đường, và nó là chủ đích — xem
+    // [aimRayAngleDeg]. Gác góc theo tầng ngoại suy là tắt cảnh báo sượt ở đúng
+    // cái tầng người ta tin nhất.
+    let aimRayAngleDeg = aimTarget != nil ? self.aimRayAngleDeg : nil
 
     // Cùng lời chặn, cùng lý do: [refreshAimTarget] đã xoá phép đếm ở mọi
     // trạng thái khác, nhưng nó chỉ chạy khi CÓ khung hình, còn `publish` tới
@@ -2044,9 +2185,23 @@ final class ArMeasureSession: NSObject {
     //
     // Không thêm sàn bắn nào: `featureCensus` đã đổi gần như mỗi lượt lấy mẫu
     // từ 0.5.0, nên trần 10 Hz vẫn là trần cũ và sàn thì đã mất từ bản ấy.
+    //
+    // Góc tia vào điều kiện này từ 0.7.0, và nó KHÔNG thừa dù phép đếm đang kéo
+    // gần như mọi mẫu đi cùng: `ArFeatureCensus` là một phép đo có hạn dùng —
+    // tài liệu của chính nó nói nó biến mất cùng lúc câu hỏi ấy được trả lời.
+    // Ngày nó ra khỏi gói, một góc tia không nằm ở đây sẽ đóng băng ở giá trị
+    // của lượt đầu trong khi người dùng vẫn đang nghiêng máy: đúng lỗi mà cái
+    // van đã trả giá một lần, chỉ khác con số.
+    //
+    // `fx` thì CỐ Ý không vào đây, ngược hẳn với góc. Lấy nét tự động làm nó
+    // nhúc nhích gần như mỗi khung hình, nên đưa vào là biến kênh trạng thái
+    // thành một cái vòi 60 Hz vì một con số không ai nhìn theo thời gian thực —
+    // app đọc nó một lần để đặt vào công thức. Nó đi nhờ mọi mẫu đã được bắn, y
+    // như khối `video`.
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
       aimTarget == lastAimTarget, featureCensus == lastFeatureCensus,
-      aimOvershootMm == lastAimOvershootMm
+      aimOvershootMm == lastAimOvershootMm,
+      aimRayAngleDeg == lastAimRayAngleDeg
     {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
@@ -2108,6 +2263,13 @@ final class ArMeasureSession: NSObject {
     if let aimOvershootMm {
       sample["aimOvershootMm"] = aimOvershootMm
     }
+    // Góc của tia ĐANG ngắm. Có mặt ở MỌI tầng, vắng mặt chỉ khi tia không
+    // trúng gì — lúc ấy không có mặt phẳng nào để đo góc so với nó, và `nil` là
+    // một sự thật chứ không phải một chỗ chưa tính. Bù 0 ở đó là nói "tia lướt
+    // sát mặt", đúng cái câu nguy hiểm nhất trường này biết nói.
+    if let aimRayAngleDeg {
+      sample["aimRayAngleDeg"] = aimRayAngleDeg
+    }
     // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
     // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
     // hai điểm, mà điểm ĐẦU mới là chỗ giả thuyết "chấm sai điểm đầu" phải
@@ -2137,6 +2299,19 @@ final class ArMeasureSession: NSObject {
     if let videoFormat {
       diagnostics["video"] = videoFormat
     }
+    // Thấu kính: cùng khối, và KHÔNG gác theo trạng thái — khác hẳn tầng ngắm
+    // và phép đếm. Nó nói về cái MÁY, không nói về một lượt ngắm, và app cần nó
+    // nhất ở hai chỗ mà lối gác kia sẽ cắt mất: lúc đã đủ hai điểm (để tính
+    // dung sai của con số vừa chốt) và lúc chưa chấm nổi điểm nào.
+    //
+    // Map rỗng thì không gửi khoá: ba ô cùng hỏng là "không đọc được thấu
+    // kính", và một khối rỗng đọc ra "đã đọc, và rỗng".
+    if let cameraIntrinsics {
+      let payload = cameraIntrinsics.payload
+      if !payload.isEmpty {
+        diagnostics["camera"] = payload
+      }
+    }
     // Phép đếm điểm đặc trưng: cùng khối, cùng lý do với khuôn hình — chuyện
     // của KHUNG HÌNH chứ không của một điểm, và phải đọc được lúc chưa chấm nổi
     // điểm nào, vì đó đúng là lúc câu hỏi nó sinh ra để trả lời đang được hỏi.
@@ -2163,6 +2338,7 @@ final class ArMeasureSession: NSObject {
     lastLimitedReason = limitedReason
     lastAimTarget = aimTarget
     lastAimOvershootMm = aimOvershootMm
+    lastAimRayAngleDeg = aimRayAngleDeg
     lastFeatureCensus = featureCensus
     lastMm = mm
     lastEmitAt = now
@@ -2365,7 +2541,18 @@ extension ArMeasureSession: ARSessionDelegate {
     // cho chấm, nên đây không phải một lượt raycast mỗi khung hình — trừ đúng
     // quãng đang có đoạn thẳng SỐNG, là quãng nó phải chạy mỗi khung hình.
     let now = CACurrentMediaTime()
-    let probe = probeReticle(now: now)
+
+    // Thấu kính của ĐÚNG khung hình này, đọc trước mọi lối rẽ ở dưới. Hai phép
+    // đọc và một phép gán — rẻ hơn hẳn một lượt raycast, và nó KHÔNG kích một
+    // lượt bắn nào: con số này cố ý nằm ngoài mọi phép so của bộ nén, nên nó đi
+    // nhờ những mẫu đã được bắn vì lý do khác.
+    //
+    // Đọc mỗi khung chứ không đọc một lần lúc `run`: gói bật lấy nét tự động,
+    // nên tiêu cự nhúc nhích theo cự ly lấy nét: một `fx` đông cứng từ lúc mở
+    // camera là một hằng số đội lốt một phép đo.
+    cameraIntrinsics = ArCameraIntrinsics(camera: frame.camera)
+
+    let probe = probeReticle(now: now, frame: frame)
     var shouldPublish = refreshAimTarget(now: now, frame: frame, probe: probe)
 
     // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.

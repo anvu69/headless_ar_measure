@@ -1,3 +1,114 @@
+## 0.7.0
+
+Two numbers, and neither is a feature. The app on top of this package finished a
+tolerance term and could not add it up, because two of its inputs did not exist
+anywhere on the wire:
+
+```
+ε = d · Δu / (fx · sin θ)
+```
+
+The aiming error projected onto the surface is divided by `sin θ`, where θ is the
+angle between the ray and the **plane**. At 0.6m with 2px of aiming error: 0.83mm
+at θ=90°, 4.00mm at θ=12°, 9.55mm at θ=5°. That is not a corner case — crouching
+low and sighting along the edge is exactly how a person holds a phone to measure
+a table.
+
+**The package still computes none of it.** It does not know `Δu`, does not
+compute `ε`, and sets no threshold. Where "too grazing" falls depends on what the
+app is measuring, the same boundary `overshootMm` already draws. What 0.7.0 adds
+is the two facts a device can actually report: how long the lens is, and how
+grazing the ray is.
+
+* **`ArMeasureSample.aimRayAngleDeg`** — the angle between the ray you are
+  aiming **right now** and the surface it is on. Sampled on the same raycast, at
+  the same 10Hz grid, as `aimTarget` and `aimOvershootMm`: three numbers that
+  only mean anything together are read from one shot at one surface from one
+  camera pose. Re-measuring it a step later measures a different ray, and the
+  answer is still a plausible number of degrees.
+
+  `ArPointDiagnostics.rayAngleDeg` has carried this number for a *placed* point
+  since 0.3.0. A warning built on that one arrives after the tap it should have
+  prevented, which is no warning at all.
+
+  **It does not follow the valve's rule, on purpose.** The old invariant is
+  untouched — `aimOvershootMm != null` still means exactly
+  `aimTarget == existingPlaneInfinite`, because it describes a boundary being
+  crossed and the other two tiers cross none. The angle is different in kind: a
+  ray grazing an ARKit-*confirmed* plane at 4° is still grazing at 4°. Gating it
+  behind the extrapolation tier would switch the grazing warning off on the tier
+  people trust most. It is `null` only when the ray hits nothing — there is no
+  surface to measure an angle against.
+
+  It is in the sample coalescer, and that is not redundant with `featureCensus`
+  pulling nearly every sample along today: `ArFeatureCensus` is an instrument
+  with an expiry date, and its own docs say so. The day it leaves, an angle
+  outside the coalescer would freeze at its first value while the user tilts the
+  phone — the exact failure the valve already paid for once, in a different
+  number.
+
+* **`ArMeasureDiagnostics.camera`** — `fx` (focal length in **pixels**,
+  `ARFrame.camera.intrinsics[0][0]`) with the `width` and `height` of the frame
+  it was read from. Both off one `ARCamera`, in one statement. No part of `ios/`
+  or `lib/` mentioned `intrinsics` before this release.
+
+  **Nobody may hardcode this.** 1442 — the figure every article about iOS
+  devices quotes — is the focal length of the 1920×1440 format. This package
+  picks the largest format the device supports (3840×2160 on the device we
+  measured on), and `fx` scales with frame width, so the real number is nearly
+  double. A hardcoded one is wrong by a factor of two, and both values land
+  inside the range that looks reasonable: a few millimetres.
+
+  Two more reasons it cannot be a constant, and both are already written into
+  this package: the format choice is the **unresolved experiment** of 0.4.0,
+  whose own revert condition is recorded in 0.4.1 — the day someone acts on it,
+  `fx` has to move with it; and `isAutoFocusEnabled` is on, so the focal length
+  drifts *within* a session. Reading it once at `run` is the same hardcoding
+  wearing a different coat, so it is read from every frame instead.
+
+  **Why the resolution ships with it rather than being borrowed from
+  `ArMeasureDiagnostics.video`.** That block is a snapshot of the format that was
+  *asked for*, taken once at `run` from `config.videoFormat`. This one is the
+  frame that actually *arrived*, and it is the pixel coordinate system
+  `intrinsics` is expressed in. ARKit does not promise the two agree, and `fx`
+  read against the wrong width is a wrong division whose answer is still a
+  plausible number of millimetres. A reader of the diagnostics strip cannot
+  interpret 1442 or 2884 without the width beside it either.
+
+  `fx` is deliberately **outside** the sample coalescer, the opposite call from
+  the angle. Autofocus nudges it almost every frame; putting it in would turn
+  the status channel into a 60Hz firehose for a number nobody watches in real
+  time — an app reads it once and puts it in a formula. It rides along on samples
+  already being emitted, exactly like `video`. It is also the one diagnostics
+  block **never** gated by session state: it describes the device, not an aim,
+  and it is needed at the two moments the aim gates cut — once both points are
+  down, and before any point exists.
+
+* **The angle calculation moved to one place.** `rayAngleDeg(from:hitTransform:)`
+  is now a single static function, called by both `makeDiagnostics` and
+  `probeReticle`. Two copies of it would have let the live warning show one angle
+  while the diagnostics strip for that very tap recorded another — both valid
+  degrees, and nobody could tell. Same law as `raycastTarget(of:)` and
+  `PlaneOvershoot`.
+
+* **`probeReticle` now takes the frame.** The angle is measured against a camera
+  pose, and it has to be the pose of the frame the raycast happened on. Reading
+  `session.currentFrame` inside the method leans on an assumption that is true
+  and that nothing guards — that ARKit has swapped the frame in before calling
+  the delegate.
+
+**What is still missing, and an app has to work around it:** there is no *live*
+camera distance. `d` exists for a placed point (`cameraDistanceMm`) and for the
+finished segment (`ArMeasureOverlay.distanceMm`, which is the segment length, not
+the camera-to-target range), but a pre-tap warning has no `d` of its own and has
+to substitute a working range. Adding one is a separate decision; it is not
+implied by this release.
+
+Tests: 18 new — nine parsing the wire on the Dart side, nine pinning the Swift
+rules that break silently. Two existing ones changed on purpose: the pinned
+coalescer condition grew a term, and the "angle is measured to the plane, not the
+normal" case now watches the shared function it moved into.
+
 ## 0.6.0
 
 **This release reverses a decision this package had pinned in a test.** Until

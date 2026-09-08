@@ -238,6 +238,62 @@ class ArVideoFormat {
   final int? fps;
 }
 
+/// Thấu kính của **một khung hình**: tiêu cự tính bằng điểm ảnh, kèm đúng khuôn
+/// hình mà tiêu cự ấy được biểu diễn trên đó.
+///
+/// Có mặt vì app cần một mẫu số. Số hạng dung sai của một phép đo AR là
+///
+///     ε = d · Δu / (fx · sin θ)
+///
+/// — `d` là cự ly tới điểm, `Δu` là sai số hướng ngắm tính bằng điểm ảnh, `θ`
+/// là góc giữa tia và MẶT phẳng ([ArMeasureSample.aimRayAngleDeg] cho tia đang
+/// ngắm, [ArPointDiagnostics.rayAngleDeg] cho điểm đã chấm). Không có [fx] thì
+/// không tính nổi một milimét nào, và cách duy nhất còn lại là ước bừa.
+///
+/// **Gói dừng ở đây.** Nó không tính `ε`, không biết `Δu`, không đặt ngưỡng nào
+/// — cùng một ranh giới với [ArPointDiagnostics.overshootMm]. Nó trả sự thật đo
+/// được: thấu kính dài bao nhiêu điểm ảnh, trên khuôn hình nào.
+///
+/// **Vì sao KHÔNG nằm chung khối với [ArVideoFormat].** Khối kia là ảnh chụp
+/// tại lời gọi `run`, đọc từ cấu hình — khuôn được **xin**. Khối này đọc từ
+/// `ARFrame.camera` của khung hình vừa tới — khuôn đang **chạy**, và ARKit
+/// không hứa hai thứ ấy bằng nhau. Trộn chúng là đọc [fx] trên một bề rộng
+/// không phải bề rộng của nó, và con số sai ra được vẫn là một con số milimét
+/// trông bình thường.
+///
+/// **Mọi trường có thể `null`**, cùng lối với [ArPointDiagnostics]: một bản
+/// Swift cũ hơn tầng này không gửi gì cả.
+class ArCameraIntrinsics {
+  const ArCameraIntrinsics({this.fx, this.width, this.height});
+
+  /// Tiêu cự theo trục ngang, tính bằng **điểm ảnh** —
+  /// `ARFrame.camera.intrinsics[0][0]`.
+  ///
+  /// **Đừng ghim cứng con số này.** 1442 — giá trị mà mọi bài viết về máy iOS
+  /// dẫn ra — là tiêu cự của khuôn 1920×1440. Gói chọn khuôn to nhất máy hỗ
+  /// trợ, nên trên máy thật nó gần gấp đôi; và khối chọn khuôn hình ấy còn là
+  /// một phép thử chưa nghiệm thu, tức là con số có thể đổi ở bản sau. Nó cũng
+  /// nhúc nhích trong một phiên, vì gói bật lấy nét tự động.
+  ///
+  /// Luôn đọc kèm [width]: cùng một thấu kính cho hai con số khác nhau trên hai
+  /// khuôn hình, và tỉ lệ giữa chúng đúng bằng tỉ lệ bề rộng.
+  ///
+  /// Số dương, hữu hạn. Qua cùng một cửa lọc với [ArPointDiagnostics.overshootMm]
+  /// chứ không qua cửa của một con số để đọc, và vì cùng một lẽ: nó là MẪU SỐ.
+  /// `0` cho ra `ε` vô cực, `NaN` làm mọi phép so sánh với `ε` thành `false` —
+  /// cả hai đều là một ngưỡng cảnh báo câm mà không ai biết.
+  final double? fx;
+
+  /// Độ phân giải của khung hình mà [fx] vừa được đọc ra —
+  /// `ARFrame.camera.imageResolution`, tính bằng điểm ảnh.
+  ///
+  /// Đây là hệ toạ độ mà [fx] và `Δu` phải cùng nằm trong. Đo `Δu` trên toạ độ
+  /// màn (point) rồi chia cho một [fx] tính trên điểm ảnh là lệch nguyên một hệ
+  /// số `devicePixelRatio`.
+  final int? width;
+  final int? height;
+}
+
 /// Đếm điểm đặc trưng thô của MỘT khung hình: tổng, và số nằm quanh tia ngắm.
 ///
 /// **Đây là một PHÉP ĐO, không phải một tính năng.** Nó có mặt ở `0.5.0` để trả
@@ -282,6 +338,7 @@ class ArMeasureDiagnostics {
     required this.points,
     this.video,
     this.features,
+    this.camera,
   });
 
   final List<ArPointDiagnostics> points;
@@ -296,6 +353,14 @@ class ArMeasureDiagnostics {
   /// để đếm về), khi ARKit không giao đám mây điểm, và trên một bản Swift cũ
   /// hơn phép đo này. Xem [ArFeatureCensus].
   final ArFeatureCensus? features;
+
+  /// Thấu kính của khung hình gần nhất — xem [ArCameraIntrinsics].
+  ///
+  /// `null` trước khung hình đầu tiên và trên một bản Swift cũ hơn tầng này.
+  /// KHÔNG bị gác theo trạng thái phiên: nó nói về cái máy, không nói về lượt
+  /// ngắm, và app cần nó cả lúc đã đo xong hai điểm để tính dung sai của con số
+  /// vừa chốt.
+  final ArCameraIntrinsics? camera;
 }
 
 /// Máy này chạy được ARKit tới đâu.
@@ -322,6 +387,7 @@ class ArMeasureSample {
     this.aimLocked = false,
     this.aimTarget,
     this.aimOvershootMm,
+    this.aimRayAngleDeg,
     this.diagnostics,
   });
 
@@ -407,6 +473,31 @@ class ArMeasureSample {
   /// và suy ra xa tới mức nào. Gói không đặt ngưỡng — xem
   /// [ArPointDiagnostics.overshootMm] để biết vì sao.
   final double? aimOvershootMm;
+
+  /// Góc giữa tia ĐANG ngắm và **mặt phẳng** nó đang trúng, độ.
+  ///
+  /// 90° là chĩa vuông góc vào mặt, 0° là tia lướt sát mặt. Không phải góc so
+  /// với pháp tuyến — hai góc ấy bù nhau, và cả hai đều nằm trong 0–90, nên
+  /// nhầm là in 63° thành 27° mà không có gì nói ra.
+  ///
+  /// **Vì sao nó ở đây chứ không chỉ ở [ArPointDiagnostics.rayAngleDeg].** Góc
+  /// sượt là số hạng nở nhanh nhất của dung sai: nó nằm ở MẪU SỐ dưới dạng
+  /// `sin θ`. Ở 0,6 m với sai số hướng ngắm 2 điểm ảnh, ε là 0,83 mm ở 90°,
+  /// 4,00 mm ở 12°, và 9,55 mm ở 5° — mà cúi thấp ngắm sượt đúng là tư thế
+  /// người ta cầm máy khi đo mép bàn. Một cảnh báo dựng trên góc của điểm ĐÃ
+  /// chấm là một cảnh báo tới sau cú bấm, và nó không cứu được cú bấm nào.
+  ///
+  /// Có nghĩa ở **mọi** tầng của [aimTarget], khác hẳn [aimOvershootMm]: một
+  /// tia sượt 4° vào một mặt phẳng ARKit đã xác nhận vẫn là một tia sượt 4°.
+  ///
+  /// `null` khi tia **không trúng gì** (không có mặt phẳng nào để đo góc so với
+  /// nó), ở mọi trạng thái mà [aimTarget] cũng `null`, và trên một bản Swift cũ
+  /// hơn trường này.
+  ///
+  /// Số hữu hạn: `NaN` và vô cực bị chặn ở cửa, cùng lối với [aimOvershootMm].
+  /// Đây là chỗ nó khác [ArPointDiagnostics.rayAngleDeg] của các bản trước —
+  /// con số kia chỉ để ĐỌC, con số này đi vào một phép chia.
+  final double? aimRayAngleDeg;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -658,6 +749,11 @@ class ArMeasure {
       // so sánh với nó đều `false`, nên một ngưỡng "vượt quá ngần này thì
       // đừng" lặng lẽ không bao giờ đúng, và cái van câm mà không ai biết.
       aimOvershootMm: _parseFinite(raw['aimOvershootMm']),
+      // Cũng qua [_parseFinite], và cùng một lý do với cái van ngay trên: góc
+      // này nằm ở MẪU SỐ (`sin θ`) của số hạng dung sai mà app dựng lên. Một
+      // `NaN` đi tiếp là `ε` thành `NaN`, mọi phép so sánh với nó `false`, và
+      // ngưỡng "sượt quá thì đừng chốt" lặng lẽ không bao giờ đúng.
+      aimRayAngleDeg: _parseFinite(raw['aimRayAngleDeg']),
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
@@ -696,18 +792,44 @@ class ArMeasure {
 
     final video = _parseVideoFormat(raw['video']);
     final features = _parseFeatureCensus(raw['features']);
+    final camera = _parseCameraIntrinsics(raw['camera']);
 
-    // Không có mẩu nào trong ba mẩu thì cả khối về `null`, không phải một đối
+    // Không có mẩu nào trong bốn mẩu thì cả khối về `null`, không phải một đối
     // tượng rỗng: rỗng đọc ra "đã đo và không có gì", còn `null` đọc đúng nghĩa
     // "bản nền này không nói". Nhưng chỉ MỘT mẩu có mặt là ĐỦ để khối tồn tại —
-    // khuôn hình và phép đếm vân đều có nghĩa từ trước khi có điểm nào, và đó
-    // đúng là lúc người ta cần chúng.
-    if (points.isEmpty && video == null && features == null) return null;
+    // khuôn hình, phép đếm vân và thấu kính đều có nghĩa từ trước khi có điểm
+    // nào, và đó đúng là lúc người ta cần chúng.
+    if (points.isEmpty && video == null && features == null && camera == null) {
+      return null;
+    }
 
     return ArMeasureDiagnostics(
       points: points,
       video: video,
       features: features,
+      camera: camera,
+    );
+  }
+
+  /// Đọc khối thấu kính. Cùng lối với [_parseVideoFormat]: sai kiểu hay thiếu
+  /// về `null`, và một map hỏng KHÔNG giết cả khối chẩn đoán.
+  ///
+  /// `fx` đi qua [_parseFinite] rồi còn phải **dương**, khác hẳn hai ô kia. Một
+  /// tiêu cự bằng `0` không phải một sự thật ("thấu kính dài không điểm ảnh" là
+  /// một câu vô nghĩa) — nó là một con số hỏng, và nó hỏng ở chỗ nguy hiểm
+  /// nhất: dưới gạch chia. Bề rộng và bề cao thì chỉ để đọc và để quy đổi, nên
+  /// chúng đi cửa thường.
+  static ArCameraIntrinsics? _parseCameraIntrinsics(Object? raw) {
+    if (raw is! Map) return null;
+
+    final fx = _parseFinite(raw['fx']);
+    final rawWidth = raw['width'];
+    final rawHeight = raw['height'];
+
+    return ArCameraIntrinsics(
+      fx: (fx != null && fx > 0) ? fx : null,
+      width: rawWidth is num ? rawWidth.round() : null,
+      height: rawHeight is num ? rawHeight.round() : null,
     );
   }
 

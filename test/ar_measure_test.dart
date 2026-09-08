@@ -291,6 +291,111 @@ void main() {
       expect(la?.aimTarget, isNull);
       expect(saiKieu?.aimTarget, isNull);
     });
+
+    /// Góc tia của tia ĐANG ngắm — trước cú bấm, không phải sau. Vào từ 0.7.0.
+    ///
+    /// Vì sao nó phải có mặt: số hạng dung sai mà app dựng lên là
+    /// `ε = d · Δu / (fx · sin θ)`, với θ là góc giữa tia và MẶT phẳng. `sin θ`
+    /// nằm ở MẪU SỐ, nên ngắm sượt làm dung sai nở ra rất nhanh — ở 0,6 m với
+    /// lệch 2 điểm ảnh: 0,83 mm ở 90°, 4,00 mm ở 12°, 9,55 mm ở 5°. Đó đúng là
+    /// tư thế người ta cầm máy khi đo mép bàn: cúi thấp, ngắm sượt.
+    ///
+    /// Gói đã bắn góc ấy cho điểm ĐÃ chấm ([ArPointDiagnostics.rayAngleDeg]) từ
+    /// trước. Một cảnh báo "ngắm quá sượt" dựng trên con số đó là một cảnh báo
+    /// tới SAU khi người dùng đã bấm — nó không cứu được cú bấm nào.
+    test(
+      'aimRayAngleDeg đọc được ở CẢ BA tầng, không riêng tầng ngoại suy',
+      () {
+        final geometry = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimLocked': true,
+          'aimTarget': 'existingPlaneGeometry',
+          'aimRayAngleDeg': 71.5,
+        });
+        final estimated = ArMeasure.parseSample({
+          'status': 'firstPointPlaced',
+          'aimLocked': true,
+          'aimTarget': 'estimatedPlane',
+          'aimRayAngleDeg': 12.0,
+        });
+        final infinite = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimLocked': true,
+          'aimTarget': 'existingPlaneInfinite',
+          'aimOvershootMm': 47.5,
+          'aimRayAngleDeg': 4.75,
+        });
+
+        expect(geometry?.aimRayAngleDeg, 71.5);
+        expect(estimated?.aimRayAngleDeg, 12.0);
+        expect(infinite?.aimRayAngleDeg, 4.75);
+      },
+    );
+
+    /// Bất biến của van GIỮ NGUYÊN, và góc tia cố ý KHÔNG theo nó.
+    ///
+    /// `aimOvershootMm != null` vẫn tương đương `aimTarget ==
+    /// existingPlaneInfinite` — nó nói về một cái biên bị vượt, và hai tầng kia
+    /// không vượt biên nào. Góc tia thì có nghĩa ở MỌI tầng: một tia sượt 4° vào
+    /// một mặt phẳng ARKit đã xác nhận vẫn là một tia sượt 4°.
+    ///
+    /// Gộp hai thứ vào chung một lối gác là mất cảnh báo sượt ở đúng cái tầng
+    /// người ta tin nhất.
+    test(
+      'góc tia có ở tầng KHÔNG có van, và van có ở tầng không nói gì thêm',
+      () {
+        final geometry = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'existingPlaneGeometry',
+          'aimRayAngleDeg': 6.25,
+        });
+
+        expect(geometry?.aimRayAngleDeg, 6.25);
+        expect(
+          geometry?.aimOvershootMm,
+          isNull,
+          reason:
+              'Tầng hình học không vượt biên nào. Bù 0 ở đây là nói "đã đo, và '
+              'bằng không" — một khẳng định khác hẳn.',
+        );
+      },
+    );
+
+    // Không trúng gì thì không có mặt phẳng nào để đo góc so với nó. `null`, và
+    // `null` cũng là đường của một bản Swift cũ hơn trường này — cùng một chỗ
+    // rơi, cùng một cách vẽ.
+    test('không trúng gì thì aimRayAngleDeg về null, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({'status': 'ready'});
+
+      expect(s?.status, ArMeasureStatus.ready);
+      expect(s?.aimTarget, isNull);
+      expect(s?.aimRayAngleDeg, isNull);
+    });
+
+    test('aimRayAngleDeg sai kiểu hay không hữu hạn về null, không ném', () {
+      late ArMeasureSample? saiKieu;
+      late ArMeasureSample? khongPhaiSo;
+      expect(() {
+        saiKieu = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'estimatedPlane',
+          'aimRayAngleDeg': 'suot-lam',
+        });
+        khongPhaiSo = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'estimatedPlane',
+          'aimRayAngleDeg': double.nan,
+        });
+      }, returnsNormally);
+
+      expect(saiKieu?.aimRayAngleDeg, isNull);
+      // NaN KHÔNG đi tiếp, và đây là chỗ trường này khác hẳn
+      // [ArPointDiagnostics.rayAngleDeg] của các bản trước: con số ấy chỉ để
+      // ĐỌC, con số này nằm ở MẪU SỐ của một phép chia. `sin(NaN)` là `NaN`,
+      // `ε` thành `NaN`, và mọi phép so sánh với `NaN` đều `false` — nên ngưỡng
+      // "sượt quá thì đừng chốt" lặng lẽ không bao giờ đúng.
+      expect(khongPhaiSo?.aimRayAngleDeg, isNull);
+    });
   });
 
   /// Chẩn đoán: ảnh chụp của ĐIỀU KIỆN mỗi điểm được chấm.
@@ -511,6 +616,171 @@ void main() {
       expect(s?.diagnostics?.features, isNotNull);
       expect(s?.diagnostics?.features?.total, isNull);
       expect(s?.diagnostics?.features?.nearRay, isNull);
+    });
+
+    /// Tiêu cự tính bằng ĐIỂM ẢNH — `ARFrame.camera.intrinsics[0][0]`. Từ 0.7.0.
+    ///
+    /// Mẫu số thứ hai của `ε = d · Δu / (fx · sin θ)`. Không có nó thì app
+    /// không tính nổi một milimét dung sai nào, và cách duy nhất còn lại là ước
+    /// bừa một con số.
+    test('tiêu cự đọc được khi chưa có điểm nào', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'camera': {'fx': 2883.6, 'width': 3840, 'height': 2160},
+        },
+      });
+
+      expect(s?.diagnostics, isNotNull);
+      expect(s?.diagnostics?.points, isEmpty);
+      expect(s?.diagnostics?.camera?.fx, 2883.6);
+      expect(s?.diagnostics?.camera?.width, 3840);
+      expect(s?.diagnostics?.camera?.height, 2160);
+    });
+
+    /// **Ca này canh một lỗi VÔ HÌNH: ghim `fx` thành một hằng số.**
+    ///
+    /// Con số 1442 mà mọi bài viết về máy iOS dẫn ra là tiêu cự của khuôn
+    /// 1920×1440. Gói đang chạy khuôn to nhất máy hỗ trợ — 3840×2160 trên máy
+    /// thật — và `fx` co giãn theo bề rộng khuôn, nên nó gần gấp đôi. Ghim cứng
+    /// thì mọi con số dung sai lệch đúng một hệ số 2, và cả hai giá trị đều nằm
+    /// gọn trong khoảng "trông hợp lý": vài milimét.
+    ///
+    /// Chuyện khuôn hình đổi không phải một giả định xa xôi — khối chọn khuôn
+    /// trong gói là một PHÉP THỬ chưa nghiệm thu (0.4.0), và chú thích của
+    /// chính nó nói **"nhịp khung tụt mà thời gian chờ không giảm thì bỏ hẳn
+    /// đoạn này"**. Ngày ai đó bỏ nó, `fx` phải tự đổi theo.
+    test('fx đi CÙNG khuôn hình đã đo nó, và đổi theo khuôn ấy', () {
+      final hd = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'camera': {'fx': 1442.0, 'width': 1920, 'height': 1440},
+        },
+      });
+      final uhd = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'camera': {'fx': 2884.0, 'width': 3840, 'height': 2160},
+        },
+      });
+
+      expect(hd?.diagnostics?.camera?.fx, 1442.0);
+      expect(hd?.diagnostics?.camera?.width, 1920);
+      expect(uhd?.diagnostics?.camera?.fx, 2884.0);
+      expect(uhd?.diagnostics?.camera?.width, 3840);
+    });
+
+    /// Vì sao `fx` KHÔNG nằm chung khối với [ArVideoFormat].
+    ///
+    /// `video` là ảnh chụp **lúc `run`**, đọc từ `config.videoFormat` — khuôn
+    /// được CẤU HÌNH. `camera` là khung hình vừa tới — khuôn đang CHẠY, và là
+    /// hệ toạ độ điểm ảnh mà `fx` được biểu diễn trên đó. Hai thứ lệch nhau
+    /// được thật: ARKit không hứa giao đúng khuôn đã xin, và `fx` còn nhúc nhích
+    /// theo lấy nét tự động (gói bật `isAutoFocusEnabled`) trong khi `video`
+    /// đứng im cả phiên.
+    ///
+    /// Trộn hai khối là đọc `fx` trên một bề rộng không phải bề rộng của nó, và
+    /// con số sai ra được vẫn là một con số milimét trông bình thường.
+    test('khối camera nói khuôn hình của CHÍNH nó, không mượn của video', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'diagnostics': {
+          'video': {'width': 3840, 'height': 2160, 'fps': 30},
+          'camera': {'fx': 1442.0, 'width': 1920, 'height': 1440},
+        },
+      });
+
+      expect(s?.diagnostics?.video?.width, 3840);
+      expect(s?.diagnostics?.video?.height, 2160);
+      expect(s?.diagnostics?.camera?.width, 1920);
+      expect(s?.diagnostics?.camera?.height, 1440);
+      expect(s?.diagnostics?.camera?.fx, 1442.0);
+    });
+
+    test(
+      'tiêu cự đi cùng khuôn hình, đếm vân và chẩn đoán điểm, không loại nhau',
+      () {
+        final s = ArMeasure.parseSample({
+          'status': 'firstPointPlaced',
+          'diagnostics': {
+            'points': [diemDay()],
+            'video': {'width': 3840, 'height': 2160, 'fps': 30},
+            'features': {'total': 26, 'nearRay': 1},
+            'camera': {'fx': 2883.6, 'width': 3840, 'height': 2160},
+          },
+        });
+
+        expect(s?.diagnostics?.points, hasLength(1));
+        expect(s?.diagnostics?.video?.fps, 30);
+        expect(s?.diagnostics?.features?.nearRay, 1);
+        expect(s?.diagnostics?.camera?.fx, 2883.6);
+      },
+    );
+
+    test('không có khối camera thì về null, ba khoá kia vẫn sống', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'diagnostics': {
+          'points': [diemDay()],
+          'video': {'width': 1920, 'height': 1440, 'fps': 60},
+          'features': {'total': 26, 'nearRay': 1},
+        },
+      });
+
+      expect(s?.diagnostics?.points, hasLength(1));
+      expect(s?.diagnostics?.video, isNotNull);
+      expect(s?.diagnostics?.features, isNotNull);
+      expect(s?.diagnostics?.camera, isNull);
+    });
+
+    /// `fx` là MẪU SỐ, nên nó qua cùng một cửa với cái van chứ không qua cửa
+    /// của một con số để đọc.
+    ///
+    /// `0` không phải "một thấu kính có tiêu cự bằng không" — không có thấu
+    /// kính nào như thế. Cho `0` đi tiếp là `ε` thành vô cực; cho `NaN` đi tiếp
+    /// là mọi phép so sánh với `ε` đều `false`, và ngưỡng cảnh báo lặng lẽ
+    /// không bao giờ đúng. Cả hai đều là cái van câm mà không ai biết.
+    test('fx không hữu hạn hoặc không dương về null, không ném', () {
+      late ArMeasureSample? khong;
+      late ArMeasureSample? am;
+      late ArMeasureSample? voCuc;
+      late ArMeasureSample? saiKieu;
+      expect(() {
+        khong = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'camera': {'fx': 0, 'width': 3840, 'height': 2160},
+          },
+        });
+        am = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'camera': {'fx': -1442.0, 'width': 3840, 'height': 2160},
+          },
+        });
+        voCuc = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'camera': {'fx': double.infinity, 'width': 3840, 'height': 2160},
+          },
+        });
+        saiKieu = ArMeasure.parseSample({
+          'status': 'ready',
+          'diagnostics': {
+            'camera': {'fx': 'dai', 'width': 'rong', 'height': null},
+          },
+        });
+      }, returnsNormally);
+
+      expect(khong?.diagnostics?.camera?.fx, isNull);
+      expect(am?.diagnostics?.camera?.fx, isNull);
+      expect(voCuc?.diagnostics?.camera?.fx, isNull);
+      expect(saiKieu?.diagnostics?.camera?.fx, isNull);
+      // Khối vẫn sống với hai ô còn lại: một `fx` hỏng không được kéo theo bề
+      // rộng khuôn, vì bề rộng ấy còn nói được một chuyện khác.
+      expect(khong?.diagnostics?.camera?.width, 3840);
+      expect(saiKieu?.diagnostics?.camera?.width, isNull);
+      expect(saiKieu?.diagnostics?.camera?.height, isNull);
     });
 
     test('mặt ước lượng: không có mặt phẳng nào, ba khoá mp về null', () {
