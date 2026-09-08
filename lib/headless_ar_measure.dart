@@ -95,14 +95,18 @@ class ArMeasurement {
 
 /// Tầng mục tiêu mà tia ĐÃ trúng — của ARKit, không phải của gói.
 ///
-/// [existingPlaneGeometry] là điểm nằm trên một mặt phẳng ARKit **đã xác
-/// nhận**; [estimatedPlane] là một mặt phẳng ARKit **đoán ra** từ hình học
-/// quanh tia (trên máy LiDAR thì đó là lưới thật, nên cùng một giá trị mang hai
-/// mức tin cậy rất khác nhau — [ArPointDiagnostics.planeAlignment] tách hai
-/// chuyện ấy ra).
+/// Ba tầng, và chúng KHÔNG cùng một mức tin cậy:
 ///
-/// [existingPlaneInfinite] không nằm trong danh sách gói bắn ra, nhưng vẫn có
-/// mặt ở đây vì giá trị này là của `ARRaycastQuery.Target`.
+/// * [existingPlaneGeometry] — điểm nằm trong đa giác biên của một mặt phẳng
+///   ARKit **đã xác nhận**. Chắc nhất gói có.
+/// * [estimatedPlane] — mặt phẳng ARKit **đoán ra** từ hình học quanh tia (trên
+///   máy LiDAR thì đó là lưới thật, nên cùng một giá trị mang hai mức tin cậy
+///   rất khác nhau — [ArPointDiagnostics.planeAlignment] tách hai chuyện ấy).
+/// * [existingPlaneInfinite] — một mặt phẳng đã dò ra, **kéo dài ra ngoài biên
+///   của chính nó**. Đây là điểm SUY RA, không phải điểm quan sát được, và nó
+///   không bao giờ đi một mình: [ArPointDiagnostics.overshootMm] (hoặc
+///   [ArMeasureSample.aimOvershootMm] cho tia đang ngắm) nói nó nằm cách biên
+///   thật bao xa. Xem hai trường ấy trước khi dùng một điểm ở tầng này.
 enum ArRaycastTarget {
   existingPlaneGeometry,
   existingPlaneInfinite,
@@ -149,6 +153,7 @@ class ArPointDiagnostics {
     this.planeAlignment,
     this.planeWidthMm,
     this.planeHeightMm,
+    this.overshootMm,
   });
 
   final ArRaycastTarget? target;
@@ -177,6 +182,31 @@ class ArPointDiagnostics {
   /// phẳng nào — cùng lối với [planeAlignment].
   final double? planeWidthMm;
   final double? planeHeightMm;
+
+  /// Điểm này nằm cách **đa giác biên** của chính mặt phẳng ấy bao xa, milimét.
+  ///
+  /// Chỉ có giá trị khi [target] là [ArRaycastTarget.existingPlaneInfinite] —
+  /// tức là điểm được SUY RA bằng cách kéo dài một mặt phẳng đã dò ra vượt khỏi
+  /// biên thật của nó. `null` ở hai tầng kia, và `null` cũng là đường của một
+  /// bản Swift cũ hơn trường này.
+  ///
+  /// **Đây là cái van, không phải một con số trang trí.** Tầng ngoại suy trả về
+  /// một điểm ở MỌI lượt bắn, kể cả khi mặt phẳng ấy đã bị kéo dài xuyên qua
+  /// vật đang ngắm — nên nếu không đọc con số này thì một cao độ mặt bàn hiện
+  /// ra dưới dạng một số đo bình thường và không có gì nói ra:
+  ///
+  /// * vài chục mm — mép bàn mà biên chưa mọc tới, ngoại suy đáng tin vừa phải;
+  /// * hàng trăm mm tới hàng mét — mặt phẳng đã kéo dài tới một chỗ không có gì
+  ///   ở đó.
+  ///
+  /// **Gói không đặt ngưỡng, và cố ý không đặt.** Ngưỡng nào là "quá xa" phụ
+  /// thuộc việc app đang đo cái gì và số ấy dùng để làm gì. Gói trả sự thật:
+  /// tầng nào, vượt biên bao nhiêu.
+  ///
+  /// Số dương, hữu hạn. Quãng đo trong MẶT PHẲNG (bỏ trục pháp tuyến), tới
+  /// **đoạn** biên gần nhất chứ không tới đỉnh gần nhất — đỉnh của
+  /// `boundaryVertices` chỉ là điểm mẫu ARKit rải dọc biên.
+  final double? overshootMm;
 }
 
 /// Khuôn hình ARKit đang CHẠY — chuyện của cả phiên, không phải của một điểm.
@@ -291,6 +321,7 @@ class ArMeasureSample {
     this.recoverable = true,
     this.aimLocked = false,
     this.aimTarget,
+    this.aimOvershootMm,
     this.diagnostics,
   });
 
@@ -344,22 +375,38 @@ class ArMeasureSample {
 
   /// Tia bắn từ tâm màn đang trúng TẦNG nào. `null` là không trúng gì.
   ///
-  /// Ba cảnh, không phải hai — và [aimLocked] chỉ tách được hai:
+  /// Bốn cảnh, không phải hai — và [aimLocked] chỉ tách được hai:
   ///
   /// * [ArRaycastTarget.existingPlaneGeometry] — điểm nằm trên một mặt phẳng
   ///   ARKit **đã xác nhận**. Chấm ở đây là chắc nhất gói có.
   /// * [ArRaycastTarget.estimatedPlane] — ARKit **đoán** một mặt phẳng từ hình
   ///   học quanh tia. Chấm được, nhưng cao độ có thể lệch, và trên máy không có
   ///   LiDAR thì lệch nhiều hơn hẳn.
+  /// * [ArRaycastTarget.existingPlaneInfinite] — một mặt phẳng đã dò ra, **kéo
+  ///   dài ra ngoài biên của chính nó**. Chấm được, và điểm ấy là điểm SUY RA.
+  ///   Đọc kèm [aimOvershootMm]: nó nói tia đang rơi cách biên thật bao xa.
   /// * `null` — không trúng gì. Cú bấm ngay bây giờ sẽ **trượt**.
   ///
-  /// Dùng nó để tâm ngắm nói ba chuyện khác nhau. Gộp hai tầng đầu vào một hình
-  /// là giấu đúng phần người dùng cần: một điểm trên mặt ước lượng trông y hệt
-  /// một điểm chắc chắn, cho tới lúc con số cuối cùng lệch.
+  /// Dùng nó để tâm ngắm nói bốn chuyện khác nhau. Gộp ba tầng vào một hình là
+  /// giấu đúng phần người dùng cần: một điểm trên mặt ước lượng — và nhất là
+  /// một điểm ngoại suy — trông y hệt một điểm chắc chắn, cho tới lúc con số
+  /// cuối cùng lệch.
   ///
   /// `null` cũng là đường của một bản Swift cũ hơn trường này. Hai đường đổ về
   /// cùng một chỗ có chủ đích: cả hai đều là "không có tầng nào để bày".
   final ArRaycastTarget? aimTarget;
+
+  /// Tia đang ngắm rơi cách **đa giác biên** của mặt phẳng ấy bao xa, milimét.
+  ///
+  /// Chỉ có giá trị khi [aimTarget] là
+  /// [ArRaycastTarget.existingPlaneInfinite]; `null` ở mọi tầng khác, khi tia
+  /// trượt, và trên một bản Swift cũ hơn trường này.
+  ///
+  /// Cùng một cái van với [ArPointDiagnostics.overshootMm], đo trước cú bấm
+  /// thay vì sau: dùng nó để tâm ngắm nói ra rằng chỗ đang ngắm là chỗ SUY RA,
+  /// và suy ra xa tới mức nào. Gói không đặt ngưỡng — xem
+  /// [ArPointDiagnostics.overshootMm] để biết vì sao.
+  final double? aimOvershootMm;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -605,6 +652,12 @@ class ArMeasure {
       // thể thêm một tầng ở bản iOS sau, và mất cả mẫu vì một trường trang trí
       // là để màn đo đứng im ở khung hình cuối.
       aimTarget: _parseRaycastTarget(raw['aimTarget']),
+      // Qua [_parseFinite] chứ không qua `as num?`, và đây là chỗ nó khác mọi
+      // con số khác của mẫu: đây là một cái VAN — app đọc nó để quyết định có
+      // được chốt một kết luận theo số đo hay không. NaN đi tiếp thì mọi phép
+      // so sánh với nó đều `false`, nên một ngưỡng "vượt quá ngần này thì
+      // đừng" lặng lẽ không bao giờ đúng, và cái van câm mà không ai biết.
+      aimOvershootMm: _parseFinite(raw['aimOvershootMm']),
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
@@ -723,6 +776,12 @@ class ArMeasure {
       },
       planeWidthMm: rawWidth is num ? rawWidth.toDouble() : null,
       planeHeightMm: rawHeight is num ? rawHeight.toDouble() : null,
+      // Cùng lối với `aimOvershootMm` của [parseSample], và khác mọi con số
+      // khác của chính khối này: quãng vượt biên là cái VAN, còn bảy trường
+      // trên là số liệu để ĐỌC. Một `NaN` ở `rayAngleDeg` in ra "NaN" và người
+      // đọc thấy ngay; một `NaN` ở đây lọt qua mọi phép so sánh mà không ai
+      // thấy.
+      overshootMm: _parseFinite(raw['overshootMm']),
     );
   }
 

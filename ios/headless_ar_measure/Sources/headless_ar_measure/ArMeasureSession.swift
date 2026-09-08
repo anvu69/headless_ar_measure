@@ -71,9 +71,10 @@ enum ArMeasurePlaceResult: String {
 /// phẳng ARKit ĐOÁN ra từ hình học quanh tia (trên máy LiDAR thì đó là lưới
 /// thật, nên cùng một chữ mang hai mức tin cậy rất khác nhau — vì thế
 /// [ArPointDiagnostics] còn chở kèm mặt phẳng trúng).
-/// `.existingPlaneInfinite` KHÔNG nằm trong danh sách gói bắn ra
-/// ([ArMeasureSession.raycastFromReticle] cố ý không dùng), nhưng vẫn có mặt ở
-/// đây vì `target` là của ARKit chứ không phải của gói.
+/// `.existingPlaneInfinite` là một mặt phẳng ĐÃ dò ra, kéo dài vượt khỏi biên
+/// của chính nó — điểm SUY RA, không phải điểm quan sát được. Nó vào danh sách
+/// gói bắn ra từ 0.6.0, và không bao giờ đi một mình: mọi lượt trúng ở tầng ấy
+/// chở kèm `overshootMm` ([PlaneOvershoot]). Xem [ArMeasureSession.raycastFromReticle].
 ///
 /// `rawValue` **LÀ** hợp đồng, y như `ArMeasureStatus` — và
 /// `test/status_contract_test.dart` canh cả ba.
@@ -147,6 +148,17 @@ struct ArPointDiagnostics {
   let planeWidthMm: Double?
   let planeHeightMm: Double?
 
+  /// Điểm này nằm cách đa giác biên của chính mặt phẳng ấy bao xa, mm.
+  ///
+  /// Chỉ khác `nil` ở tầng `.existingPlaneInfinite` — tức là ở đúng những điểm
+  /// SUY RA. Đây là **lai lịch** của một điểm đã chấm, và nó phải đi cùng số đo
+  /// tới tận kho: một số đo ngoại suy đọc lại sau một tuần mà trông y hệt một
+  /// số đo trên mặt phẳng đã xác nhận thì cái van chỉ hoãn được lỗi một tuần.
+  ///
+  /// Khác bảy trường trên ở một điểm: chúng là số liệu để NGƯỜI ĐỌC nhìn, còn
+  /// cái này là số liệu để MÁY quyết định. Xem [PlaneOvershoot].
+  let overshootMm: Double?
+
   /// Map đã sẵn sàng cho kênh. Khoá vắng mặt = tầng nền không nói được.
   var payload: [String: Any] {
     var map: [String: Any] = [:]
@@ -158,8 +170,42 @@ struct ArPointDiagnostics {
     if let planeAlignment { map["planeAlignment"] = planeAlignment.rawValue }
     if let planeWidthMm { map["planeWidthMm"] = planeWidthMm }
     if let planeHeightMm { map["planeHeightMm"] = planeHeightMm }
+    if let overshootMm { map["overshootMm"] = overshootMm }
     return map
   }
+}
+
+/// Một lượt trúng của tia phân tầng: kết quả của ARKit, cộng cái van đi kèm.
+///
+/// Van và kết quả đi CHUNG một giá trị, không phải hai đường: quãng vượt biên
+/// tính được đúng một lần, tại đúng lượt bắn đã sinh ra nó, từ đúng mặt phẳng
+/// mà lượt ấy trúng. Trả riêng `ARRaycastResult` rồi đi tìm lại mặt phẳng ở
+/// bước sau là đi tìm một thứ ARKit có thể đã thay (mặt phẳng lớn lên, hai mặt
+/// nhập một) — và con số ra được vẫn là một con số milimét trông bình thường.
+struct ArSurfaceHit {
+  let result: ARRaycastResult
+
+  /// Quãng từ điểm chạm tới đa giác biên của mặt phẳng ấy, mm.
+  ///
+  /// `nil` ở hai tầng đầu, và ở đó `nil` là một sự thật chứ không phải một chỗ
+  /// thiếu: điểm nằm TRONG biên (tầng hình học) hoặc trên một mặt ARKit vừa
+  /// đoán ra (tầng ước lượng) thì không có biên nào bị vượt.
+  ///
+  /// Ở tầng ngoại suy nó KHÔNG BAO GIỜ `nil` — [ArMeasureSession.raycastFromReticle]
+  /// bỏ hẳn lượt trúng nào không tính được van.
+  let overshootMm: Double?
+}
+
+/// Một đầu mút đã chấm, kèm LAI LỊCH của nó, để tầng vẽ dùng.
+///
+/// Vị trí và lai lịch đi chung một giá trị chứ không phải hai mảng song song:
+/// hai mảng lệch nhau một ô thì đầu tin được vẽ thành đầu suy ra và ngược lại —
+/// im lặng, và lệch đúng về phía nguy hiểm.
+struct ArMeasureMark {
+  let position: SIMD3<Float>
+
+  /// Điểm này lấy từ một mặt phẳng đã bị KÉO DÀI ra ngoài biên của nó.
+  let isExtrapolated: Bool
 }
 
 /// Đường ra của một phiên: một map đã sẵn sàng cho `EventChannel`.
@@ -188,12 +234,14 @@ private enum ArReticleProbe {
   /// Chưa tới nhịp dò kế tiếp. Giữ nguyên mọi thứ của lượt trước.
   case skipped
 
-  /// Trúng, kèm vị trí trong hệ toạ độ thế giới và TẦNG tia đã trúng.
+  /// Trúng, kèm vị trí trong hệ toạ độ thế giới, TẦNG tia đã trúng, và quãng
+  /// vượt biên nếu tầng ấy là tầng ngoại suy.
   ///
-  /// Tầng đi kèm chứ không suy lại sau: nó chỉ tồn tại trong `ARRaycastResult`
-  /// của đúng lượt dò này, và hai tầng mang hai mức tin cậy khác hẳn nhau —
-  /// mặt phẳng ARKit đã xác nhận, so với mặt phẳng nó vừa đoán ra quanh tia.
-  case hit(SIMD3<Float>, ArRaycastTarget?)
+  /// Cả ba đi kèm chứ không suy lại sau: chúng chỉ tồn tại trong
+  /// `ARRaycastResult` của đúng lượt dò này, và ba tầng mang ba mức tin cậy
+  /// khác hẳn nhau — mặt phẳng ARKit đã xác nhận, mặt phẳng nó vừa đoán ra
+  /// quanh tia, và một mặt phẳng đã dò được kéo dài ra ngoài biên của nó.
+  case hit(SIMD3<Float>, ArRaycastTarget?, Double?)
 
   /// Đã dò và không trúng gì.
   case missed
@@ -251,13 +299,22 @@ final class ArMeasureNodes {
   let root = SCNNode()
 
   private let dots: [SCNNode]
+
+  /// Hình thay thế cho một đầu mút NGOẠI SUY: một vòng rỗng thay cho chấm đặc.
+  ///
+  /// Dựng sẵn cả hai hình cho mỗi đầu mút rồi chỉ ẩn/hiện, cùng lối với mọi thứ
+  /// khác trong lớp này — đổi hình bằng cách dựng lại `SCNGeometry` là cấp phát
+  /// trên luồng vẽ, ở đúng nhịp số đo trôi.
+  private let rings: [SCNNode]
+
   private let line: SCNNode
 
   init() {
     dots = [Self.makeDot(), Self.makeDot()]
+    rings = [Self.makeRing(), Self.makeRing()]
     line = Self.makeLine()
-    for dot in dots {
-      root.addChildNode(dot)
+    for node in dots + rings {
+      root.addChildNode(node)
     }
     root.addChildNode(line)
     update(points: [], live: nil)
@@ -274,17 +331,25 @@ final class ArMeasureNodes {
   /// Đã đủ hai điểm thì `live` bị bỏ qua — đoạn thẳng nối hai điểm ĐÃ chấm, và
   /// tia tâm ngắm lúc ấy không còn nói về phép đo này nữa.
   ///
+  /// Mỗi đầu mút hiện ra ở một trong HAI hình, theo lai lịch của nó: chấm ĐẶC
+  /// cho điểm quan sát được, vòng RỖNG cho điểm ngoại suy. Xem [makeRing].
+  ///
   /// Không dựng lại node nào — chỉ dời chỗ và ẩn/hiện. Dựng lại `SCNGeometry`
   /// mỗi lượt là cấp phát trên luồng vẽ, và lượt gọi này đi cùng nhịp với số đo
   /// trôi.
-  func update(points: [SIMD3<Float>], live: SIMD3<Float>?) {
-    for (index, dot) in dots.enumerated() {
-      if index < points.count {
-        dot.simdPosition = points[index]
-        dot.isHidden = false
-      } else {
-        dot.isHidden = true
-      }
+  func update(points: [ArMeasureMark], live: SIMD3<Float>?) {
+    for index in dots.indices {
+      // Ẩn CẢ HAI hình trước rồi mới hiện đúng một cái. Chỉ ẩn cái không dùng
+      // thì một đầu mút đổi lai lịch giữa chừng để lại hình cũ nằm nguyên chỗ
+      // — hai đầu mút thành ba, và cái thừa nằm đúng chỗ cái thật.
+      dots[index].isHidden = true
+      rings[index].isHidden = true
+      guard index < points.count else { continue }
+
+      let mark = points[index]
+      let node = mark.isExtrapolated ? rings[index] : dots[index]
+      node.simdPosition = mark.position
+      node.isHidden = false
     }
 
     // Hai đầu của đoạn, theo đúng thứ tự ưu tiên. Không có cặp nào thì KHÔNG
@@ -293,9 +358,9 @@ final class ArMeasureNodes {
     // chấm xong".
     let ends: (SIMD3<Float>, SIMD3<Float>)?
     if points.count >= 2 {
-      ends = (points[0], points[1])
+      ends = (points[0].position, points[1].position)
     } else if points.count == 1, let live {
-      ends = (points[0], live)
+      ends = (points[0].position, live)
     } else {
       ends = nil
     }
@@ -348,6 +413,47 @@ final class ArMeasureNodes {
     sphere.segmentCount = 16
     sphere.firstMaterial = makeMaterial()
     return SCNNode(geometry: sphere)
+  }
+
+  /// Hình của một đầu mút NGOẠI SUY: một vòng rỗng, cùng cỡ với chấm đặc.
+  ///
+  /// **Khác bằng HÌNH, không khác bằng MÀU**, và đó là một lựa chọn có ba lý do
+  /// đo được — đổi màu là cách rẻ hơn hẳn:
+  ///
+  /// * Cảnh này KHÔNG có đèn nào ([makeMaterial]), nên mọi vật liệu ở đây đều
+  ///   tự phát sáng. Một màu thứ hai tự phát sáng trên nền camera đọc ra như
+  ///   một BÁO LỖI — đỏ nhất là thế — chứ không như một mức tin cậy thấp hơn.
+  ///   Điểm ngoại suy không phải một lỗi; nó là một điểm chấm được, kém chắc.
+  /// * Màu là thứ đầu tiên mất đi với người mù màu, và mất hẳn trong một tấm
+  ///   ảnh in đen trắng — mà ảnh chụp là thứ người ta giữ lại.
+  /// * Hai chấm đặc khác màu chỉ so được khi nhìn thấy CẢ HAI cạnh nhau. Rỗng
+  ///   hay đặc thì đọc được trên từng đầu một, kể cả lúc đầu kia ngoài khung.
+  ///
+  /// Vòng của `SCNTorus` nằm trong mặt X–Z của node, nên nhìn nghiêng nó mỏng
+  /// như sợi chỉ và nhìn dọc trục thì nó BIẾN MẤT hẳn. Hai bước dưới đây chữa
+  /// đúng chuyện đó: xoay vòng về mặt X–Y (pháp tuyến thành +Z), rồi để
+  /// `SCNBillboardConstraint` quay cả node về phía camera ở mỗi khung hình.
+  /// Thiếu chúng thì cái nhãn hình học này im lặng vắng mặt ở đúng những góc
+  /// ngắm người ta hay đứng — và một đầu ngoại suy trông y hệt không có gì.
+  ///
+  /// Ràng buộc billboard do SceneKit tự chạy trong lượt vẽ của nó, nên nó không
+  /// phá luật "lớp này không chạy mỗi khung hình" của [ArMeasureNodes].
+  private static func makeRing() -> SCNNode {
+    let torus = SCNTorus(ringRadius: dotRadius, pipeRadius: dotRadius * 0.3)
+    torus.ringSegmentCount = 24
+    torus.pipeSegmentCount = 6
+    torus.firstMaterial = makeMaterial()
+
+    let ring = SCNNode(geometry: torus)
+    ring.simdEulerAngles = SIMD3<Float>(.pi / 2, 0, 0)
+
+    // Vòng nằm trong một node CON, và ràng buộc đặt ở node CHA: billboard ghi
+    // đè trọn phép xoay của node nó gắn vào, nên đặt cả hai lên cùng một node
+    // là phép xoay 90° ở trên bị xoá và vòng lại quay về mặt X–Z.
+    let pivot = SCNNode()
+    pivot.addChildNode(ring)
+    pivot.constraints = [SCNBillboardConstraint()]
+    return pivot
   }
 
   private static func makeLine() -> SCNNode {
@@ -467,9 +573,14 @@ final class ArMeasureSession: NSObject {
   ///
   /// Lượt dò này KHÔNG dùng chung nhịp với [minIntervalSeconds] vì hai thứ
   /// khác hẳn nhau về giá: bắn một mẫu là ghép một dictionary rồi đẩy qua kênh,
-  /// còn dò là chạy tới hai `ARRaycastQuery` thật — một lượt cắt hình học mặt
+  /// còn dò là chạy tới BA `ARRaycastQuery` thật — một lượt cắt hình học mặt
   /// phẳng đã dò ra, rồi (nếu trượt) một lượt khớp mặt phẳng ước lượng quanh
-  /// tia.
+  /// tia, rồi (nếu vẫn trượt) một lượt cắt mặt phẳng ấy kéo dài vô hạn, kèm
+  /// một lượt quét đa giác biên để tính quãng vượt biên.
+  ///
+  /// Tầng thứ ba chỉ chạy ở đúng cảnh hai tầng đầu đã trượt — tức là ở đúng
+  /// cảnh không có gì khác để làm — nên nó không cộng thêm gì vào quãng mà
+  /// phép đo đang chạy trơn tru.
   ///
   /// Chọn 10 Hz, không phải 60 Hz theo khung hình:
   ///
@@ -628,6 +739,13 @@ final class ArMeasureSession: NSObject {
   /// Xem [refreshAimTarget].
   private var aimTarget: ArRaycastTarget?
 
+  /// Quãng vượt biên của tia ĐANG ngắm, mm. `nil` ở mọi tầng trừ ngoại suy.
+  ///
+  /// Lấy mẫu CÙNG lượt, CÙNG lưới nhịp với [aimTarget], và phải thế: hai thứ
+  /// này đọc chung một câu — "đang ngắm vào chỗ suy ra, và suy ra xa ngần này".
+  /// Câu ấy chỉ đúng khi cả hai nói về cùng một lượt raycast.
+  private var aimOvershootMm: Double?
+
   /// Lần LẤY MẪU cờ ngắm gần nhất, để giãn nhịp đổi hình tâm ngắm.
   ///
   /// Mốc RIÊNG, không mượn [lastAimProbeAt]: ở nhánh đang có đoạn thẳng sống,
@@ -681,6 +799,7 @@ final class ArMeasureSession: NSObject {
   private var lastStatus: ArMeasureStatus?
   private var lastLimitedReason: ArMeasureLimitedReason?
   private var lastAimTarget: ArRaycastTarget?
+  private var lastAimOvershootMm: Double?
   private var lastFeatureCensus: ArFeatureCensus?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
@@ -990,7 +1109,7 @@ final class ArMeasureSession: NSObject {
     let status = currentStatus()
     guard status == .ready || status == .firstPointPlaced else { return .notReady }
     guard let hit = raycastFromReticle() else { return .missed }
-    let transform = hit.worldTransform
+    let transform = hit.result.worldTransform
 
     // `ARAnchor` chứ không phải `simd_float3` thuần — nhưng KHÔNG phải vì
     // anchor tự đi theo lượt tinh chỉnh. Nó không hứa thế: `transform` là
@@ -1194,29 +1313,85 @@ final class ArMeasureSession: NSObject {
 
   /// Bắn tia từ con trỏ giữa màn.
   ///
-  /// Hai tầng, đúng thứ tự: `.existingPlaneGeometry` là điểm nằm trên một mặt
-  /// phẳng ARKit **đã xác nhận** — chắc nhất, nhưng chỉ có khi mặt ấy đã dò ra.
-  /// Trượt thì rơi về `.estimatedPlane`, chỗ ARKit đoán một mặt phẳng từ hình
-  /// học quanh tia. Trên máy LiDAR tầng thứ hai cắt vào lưới thật, nên nó chắc
-  /// hơn hẳn — cùng một dòng mã, khác nhau ở dưới.
+  /// Ba tầng, và **thứ tự LÀ hợp đồng**:
+  ///
+  /// 1. `.existingPlaneGeometry` — điểm nằm trong đa giác biên của một mặt
+  ///    phẳng ARKit **đã xác nhận**. Chắc nhất, nhưng chỉ có khi mặt ấy đã dò
+  ///    ra tới chỗ đang ngắm.
+  /// 2. `.estimatedPlane` — ARKit đoán một mặt phẳng từ hình học quanh tia.
+  ///    Trên máy LiDAR tầng này cắt vào lưới thật nên nó chắc hơn hẳn — cùng
+  ///    một dòng mã, khác nhau ở dưới.
+  /// 3. `.existingPlaneInfinite` — một mặt phẳng đã dò ra, **kéo dài vượt khỏi
+  ///    biên của chính nó**. Điểm SUY RA, không phải điểm quan sát được.
+  ///
+  /// **Tầng ba là một lượt LẬT quyết định.** Bản trước cấm hẳn nó, và lý do ấy
+  /// vẫn đúng nguyên văn: nó kéo dài mặt bàn xuyên qua cái iPad và trả về một
+  /// điểm ở CAO ĐỘ MẶT BÀN, hoặc chĩa vào tường xa thì trả một điểm đâu đó dọc
+  /// mặt sàn kéo dài — "một con số trông bình thường mà sai là dạng hỏng tệ
+  /// nhất của gói này". Thứ đổi là ba chữ *trông bình thường*: lượt trúng ở
+  /// tầng ba nay **chỉ được nhận khi nó tự khai được** quãng ra ngoài biên, và
+  /// quãng ấy đi lên Dart cùng tầng tia. Vài chục mm là mép bàn mà biên chưa
+  /// mọc tới; hàng trăm mm tới hàng mét là đúng cảnh hỏng ấy, và nó tự lộ.
+  ///
+  /// Dữ kiện ép phải lật: trên máy thật, đám mây điểm đặc trưng của cả khung
+  /// hình chỉ có 26 điểm, có lúc 2; quanh tia có 1, có lúc 0 (phép đo của
+  /// 0.5.0). Không đủ nguyên liệu cho bất kỳ phép khớp mặt phẳng nào, nên lựa
+  /// chọn thật không phải "ngoại suy hay đo đúng" mà là "ngoại suy có nhãn hay
+  /// không đo được".
+  ///
+  /// **Thêm vào CUỐI, không đổi hai tầng đầu.** Một mặt phẳng vô hạn trúng ở
+  /// gần như mọi hướng, nên đưa nó lên trước là hai tầng kia không bao giờ được
+  /// thử tới nữa — cả gói lặng lẽ chuyển sang đo bằng điểm suy ra.
   ///
   /// Trả về CẢ `ARRaycastResult` chứ không phải mỗi `worldTransform`: kết quả
   /// còn chở `target` (tầng nào đã trúng) và `anchor` (mặt phẳng nào, nếu có),
   /// và đây là chỗ DUY NHẤT hai thứ ấy tồn tại. Vứt chúng ở đây thì tầng chẩn
   /// đoán mất đúng hai trường phân biệt "mặt phẳng ARKit đã xác nhận" với "mặt
   /// phẳng nó đoán ra" — mà không lỗi nào nổ, vì mọi thứ còn lại vẫn chạy.
-  private func raycastFromReticle() -> ARRaycastResult? {
+  private func raycastFromReticle() -> ArSurfaceHit? {
     let bounds = sceneView.bounds
     guard bounds.width > 0, bounds.height > 0 else { return nil }
     let reticle = CGPoint(x: bounds.midX, y: bounds.midY)
 
-    let targets: [ARRaycastQuery.Target] = [.existingPlaneGeometry, .estimatedPlane]
+    let targets: [ARRaycastQuery.Target] = [
+      .existingPlaneGeometry, .estimatedPlane, .existingPlaneInfinite,
+    ]
     for target in targets {
       guard let query = sceneView.raycastQuery(from: reticle, allowing: target, alignment: .any)
       else { continue }
-      if let hit = sceneView.session.raycast(query).first {
-        return hit
+      guard let hit = sceneView.session.raycast(query).first else { continue }
+
+      // Hai tầng đầu: điểm QUAN SÁT được. Không có biên nào bị vượt, nên `nil`
+      // ở đây là một sự thật chứ không phải một chỗ chưa tính.
+      if target != .existingPlaneInfinite {
+        return ArSurfaceHit(result: hit, overshootMm: nil)
       }
+
+      // Tầng ba chỉ được NHẬN khi nó tự khai được. Ba điều kiện, và trượt bất
+      // cứ điều nào thì lượt trúng này bị BỎ — trả về `nil`, tức là một lượt
+      // trượt, tức là tâm ngắm nói thẳng "chưa bấm được".
+      //
+      // Đây cũng là chỗ luật "KHÔNG ngoại suy khi chưa dò được mặt phẳng nào"
+      // được thi hành, và nó được thi hành một cách CHÍNH XÁC chứ không gần
+      // đúng: không có mặt phẳng thì không có `ARPlaneAnchor` để kéo dài, nên
+      // `hit.anchor` rỗng và lượt trúng rơi ngay tại đây. Một lời chặn thứ hai
+      // đi đếm mặt phẳng của phiên trước khi bắn vừa tốn hơn vừa nói một câu
+      // KHÁC — "phiên có mặt phẳng nào đó" chứ không phải "lượt trúng NÀY có
+      // một mặt phẳng để đo biên".
+      //
+      // Nhận nó với `overshootMm` bằng `nil` là dựng lại đúng cảnh mà bản trước
+      // cấm: một điểm suy ra, không nhãn, và không ai biết nó suy ra xa tới đâu.
+      let column = hit.worldTransform.columns.3
+      guard
+        Self.raycastTarget(of: hit) == .existingPlaneInfinite,
+        let plane = hit.anchor as? ARPlaneAnchor,
+        let overshootMm = PlaneOvershoot.millimetres(
+          worldPoint: SIMD3<Float>(column.x, column.y, column.z),
+          planeTransform: plane.transform,
+          boundaryVertices: plane.geometry.boundaryVertices)
+      else { return nil }
+
+      return ArSurfaceHit(result: hit, overshootMm: overshootMm)
     }
     return nil
   }
@@ -1246,10 +1421,10 @@ final class ArMeasureSession: NSObject {
     }
   }
 
-  private func makeDiagnostics(for hit: ARRaycastResult) -> ArPointDiagnostics {
-    let target = Self.raycastTarget(of: hit)
+  private func makeDiagnostics(for hit: ArSurfaceHit) -> ArPointDiagnostics {
+    let target = Self.raycastTarget(of: hit.result)
 
-    let hitColumn = hit.worldTransform.columns.3
+    let hitColumn = hit.result.worldTransform.columns.3
     let hitPosition = SIMD3<Float>(hitColumn.x, hitColumn.y, hitColumn.z)
 
     var cameraDistanceMm: Double?
@@ -1267,7 +1442,7 @@ final class ArMeasureSession: NSObject {
       if distance > 0 {
         // Trục Y của transform mà raycast trả về LÀ pháp tuyến bề mặt (hợp
         // đồng của `ARRaycastResult`).
-        let n = hit.worldTransform.columns.1
+        let n = hit.result.worldTransform.columns.1
         let normal = simd_normalize(SIMD3<Float>(n.x, n.y, n.z))
         let direction = toHit / distance
         // `asin` chứ không `acos`: `dot` cho góc so với PHÁP TUYẾN, mà thứ đọc
@@ -1287,7 +1462,7 @@ final class ArMeasureSession: NSObject {
     var planeHeightMm: Double?
     // Không có `ARPlaneAnchor` nghĩa là tia trúng một mặt ƯỚC LƯỢNG. Ba khoá
     // dưới đây vắng mặt trên dây, và Dart đọc ra "không có mặt phẳng".
-    if let plane = hit.anchor as? ARPlaneAnchor {
+    if let plane = hit.result.anchor as? ARPlaneAnchor {
       switch plane.alignment {
       case .horizontal: planeAlignment = .horizontal
       case .vertical: planeAlignment = .vertical
@@ -1318,7 +1493,12 @@ final class ArMeasureSession: NSObject {
       rayAngleDeg: rayAngleDeg,
       planeAlignment: planeAlignment,
       planeWidthMm: planeWidthMm,
-      planeHeightMm: planeHeightMm
+      planeHeightMm: planeHeightMm,
+      // Chép LẠI cái van đã tính ở [raycastFromReticle], không tính lần thứ
+      // hai: mặt phẳng có thể đã lớn lên hoặc nhập với mặt khác giữa hai lượt,
+      // và một con số tính lại từ biên MỚI gán cho một cú bấm CŨ vẫn là một con
+      // số milimét trông bình thường.
+      overshootMm: hit.overshootMm
     )
   }
 
@@ -1396,10 +1576,10 @@ final class ArMeasureSession: NSObject {
       return .missed
     }
 
-    let column = hit.worldTransform.columns.3
+    let column = hit.result.worldTransform.columns.3
     let point = SIMD3<Float>(column.x, column.y, column.z)
     liveHitPoint = point
-    return .hit(point, Self.raycastTarget(of: hit))
+    return .hit(point, Self.raycastTarget(of: hit.result), hit.overshootMm)
   }
 
   /// Đếm điểm đặc trưng thô của một khung hình: tổng, và số nằm quanh tia ngắm.
@@ -1486,6 +1666,7 @@ final class ArMeasureSession: NSObject {
     now: TimeInterval, frame: ARFrame, probe: ArReticleProbe
   ) -> Bool {
     let wasTarget = aimTarget
+    let wasOvershoot = aimOvershootMm
     let wasCensus = featureCensus
 
     switch probe {
@@ -1497,11 +1678,12 @@ final class ArMeasureSession: NSObject {
       // lượt ngắm nào. Giữ con số của lượt trước là để trên dải chẩn đoán một
       // phép đếm gán cho một khoảnh khắc nó không nói về.
       aimTarget = nil
+      aimOvershootMm = nil
       featureCensus = nil
       lastAimSampleAt = 0
     case .skipped:
       break
-    case .hit(_, let target):
+    case .hit(_, let target, let overshootMm):
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       // Trúng mà ARKit trả một tầng lạ (một giá trị thêm ở bản iOS sau) vẫn là
@@ -1510,18 +1692,25 @@ final class ArMeasureSession: NSObject {
       // thấp thì cùng lắm là mời người dùng ngắm kỹ hơn, đoán cao là hứa một
       // thứ chưa ai kiểm.
       aimTarget = target ?? .estimatedPlane
+      // Van gác theo TẦNG ĐÃ CHỐT ở dòng trên, không theo `target` thô. Ở
+      // nhánh tầng lạ vừa nói, tầng chốt lại thành `.estimatedPlane` — và một
+      // quãng vượt biên gắn vào một tầng không phải tầng ngoại suy đọc ra một
+      // câu vô nghĩa mà vẫn có số.
+      aimOvershootMm = aimTarget == .existingPlaneInfinite ? overshootMm : nil
       featureCensus = makeFeatureCensus(from: frame)
     case .missed:
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       aimTarget = nil
+      aimOvershootMm = nil
       // Đếm cả ở nhánh TRƯỢT, và đây mới là nhánh phép đo sinh ra để phục vụ:
       // cảnh đang điều tra là một chuỗi trượt không dứt. Chỉ đếm lúc trúng là
       // đo đúng cái cảnh không cần đo.
       featureCensus = makeFeatureCensus(from: frame)
     }
 
-    return wasTarget != aimTarget || wasCensus != featureCensus
+    return wasTarget != aimTarget || wasOvershoot != aimOvershootMm
+      || wasCensus != featureCensus
   }
 
   // MARK: - Trạng thái và số đo
@@ -1578,14 +1767,22 @@ final class ArMeasureSession: NSObject {
     }
   }
 
-  /// Vị trí các điểm đã chấm trong hệ toạ độ thế giới, theo thứ tự chấm.
+  /// Vị trí và LAI LỊCH các điểm đã chấm, theo thứ tự chấm.
   ///
-  /// Đọc từ chính `anchors` — cùng nguồn với [currentDistanceMm], nên hình vẽ
-  /// và con số không bao giờ nói hai chuyện khác nhau.
-  private func currentPoints() -> [SIMD3<Float>] {
-    anchors.map {
-      let column = $0.transform.columns.3
-      return SIMD3<Float>(column.x, column.y, column.z)
+  /// Vị trí đọc từ chính `anchors` — cùng nguồn với [currentDistanceMm], nên
+  /// hình vẽ và con số không bao giờ nói hai chuyện khác nhau.
+  ///
+  /// Lai lịch đọc từ khối chẩn đoán đã ghi NGAY LÚC BẤM, không dò lại bằng một
+  /// tia mới: tầng của một điểm chỉ tồn tại trong `ARRaycastResult` của đúng cú
+  /// bấm sinh ra nó. Dò lại lúc vẽ là hỏi một câu KHÁC — "chỗ này BÂY GIỜ là
+  /// tầng gì" — rồi trả lời nó như thể đó là lai lịch của cú bấm cũ.
+  private func currentMarks() -> [ArMeasureMark] {
+    anchors.map { anchor in
+      let column = anchor.transform.columns.3
+      return ArMeasureMark(
+        position: SIMD3<Float>(column.x, column.y, column.z),
+        isExtrapolated:
+          pointDiagnostics[anchor.identifier]?.target == .existingPlaneInfinite)
     }
   }
 
@@ -1690,16 +1887,21 @@ final class ArMeasureSession: NSObject {
     guard !isStopped else { return }
 
     let trustworthy = coordinatesAreTrustworthy()
-    let placed = trustworthy ? currentPoints() : []
+    let placed = trustworthy ? currentMarks() : []
     // Đầu sống chỉ có nghĩa khi đã chấm ĐÚNG một điểm. Không điểm nào thì không
     // có gì để nối tới nó; đủ hai điểm thì đoạn thẳng đã nối hai điểm thật.
     let live = placed.count == 1 ? liveHitPoint : nil
 
     measureNodes.update(points: placed, live: live)
 
+    // Khung lớp phủ chỉ chở TOẠ ĐỘ, không chở lai lịch, và đó là chủ ý: lai
+    // lịch đã đi trên kênh trạng thái (`aimTarget` cho đầu sống, `diagnostics`
+    // cho từng điểm đã chấm). Nhân bản nó sang đây là dựng một đường thứ hai
+    // nói cùng một chuyện, và hai đường ấy lệch nhau được — mỗi kênh có nhịp
+    // riêng, nên chúng lệch pha THẬT chứ không chỉ trên lý thuyết.
     var frame: [String: Any] = [:]
-    let a = placed.first
-    let b = placed.count >= 2 ? placed[1] : live
+    let a = placed.first?.position
+    let b = placed.count >= 2 ? placed[1].position : live
 
     if let a, let projected = projectToScreen(a) {
       frame["ax"] = Double(projected.x)
@@ -1785,6 +1987,11 @@ final class ArMeasureSession: NSObject {
     // lượt raycast là hai thứ lệch nhau được, và người dùng là người duy nhất
     // thấy chúng cạnh nhau.
     let aimLocked = aimTarget != nil
+    // Van gác theo chính `aimTarget` VỪA CHẶN ở trên, không gác lại theo
+    // `status`: hai lời chặn rời nhau là mở đúng một khe cho một quãng vượt
+    // biên đi ra kênh mà không có tầng nào đi kèm — một con số nói về một tầng
+    // mà mẫu ấy không hề nhắc tới.
+    let aimOvershootMm = aimTarget != nil ? self.aimOvershootMm : nil
 
     // Cùng lời chặn, cùng lý do: [refreshAimTarget] đã xoá phép đếm ở mọi
     // trạng thái khác, nhưng nó chỉ chạy khi CÓ khung hình, còn `publish` tới
@@ -1827,8 +2034,19 @@ final class ArMeasureSession: NSObject {
     // kênh trạng thái từ nay không còn im khi không có gì xảy ra. Đây là giá
     // của một bản ĐO, và nó ra cùng lúc với phép đo — bỏ phép đo là sàn ấy trở
     // lại y như cũ.
+    // Van nằm trong điều kiện gộp vì một lẽ RIÊNG, không phải để cho đủ bộ:
+    // khi tia đứng ở tầng ngoại suy và người dùng rê máy ra xa mép bàn, `status`
+    // đứng im, `limitedReason` là `nil`, `aimTarget` KHÔNG đổi (vẫn ngoại suy),
+    // và `mm` là `nil` khi chưa chấm điểm nào. Thứ duy nhất đổi là chính con số
+    // này. Để nó ngoài điều kiện thì van đóng băng ở giá trị của lượt đầu — 30
+    // mm — trong khi tia đã trôi ra hai mét: một cái van báo AN TOÀN đúng lúc
+    // nó phải kêu, và như thế còn tệ hơn không có van nào.
+    //
+    // Không thêm sàn bắn nào: `featureCensus` đã đổi gần như mỗi lượt lấy mẫu
+    // từ 0.5.0, nên trần 10 Hz vẫn là trần cũ và sàn thì đã mất từ bản ấy.
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
-      aimTarget == lastAimTarget, featureCensus == lastFeatureCensus
+      aimTarget == lastAimTarget, featureCensus == lastFeatureCensus,
+      aimOvershootMm == lastAimOvershootMm
     {
       guard let mm else { return }
       if let last = lastMm, abs(mm - last) < Self.minChangeMm { return }
@@ -1881,6 +2099,14 @@ final class ArMeasureSession: NSObject {
     // nào để bày.
     if let aimTarget {
       sample["aimTarget"] = aimTarget.rawValue
+    }
+    // Cái van, đo trên tia ĐANG ngắm. Chỉ có mặt ở tầng ngoại suy, và vắng mặt
+    // ở hai tầng kia là một SỰ THẬT chứ không phải một chỗ chưa tính: điểm nằm
+    // trong biên thật, hoặc trên một mặt ARKit vừa đoán ra, thì không có biên
+    // nào bị vượt. Bù 0 ở đó là nói "đã đo, và bằng không" — một khẳng định
+    // khác hẳn, và nó xoá đúng thứ phân biệt ba tầng.
+    if let aimOvershootMm {
+      sample["aimOvershootMm"] = aimOvershootMm
     }
     // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
     // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
@@ -1936,6 +2162,7 @@ final class ArMeasureSession: NSObject {
     lastStatus = status
     lastLimitedReason = limitedReason
     lastAimTarget = aimTarget
+    lastAimOvershootMm = aimOvershootMm
     lastFeatureCensus = featureCensus
     lastMm = mm
     lastEmitAt = now

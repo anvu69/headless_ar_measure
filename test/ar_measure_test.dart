@@ -185,7 +185,7 @@ void main() {
     // Cờ trúng/trượt gộp hai mức tin cậy rất khác nhau vào một hình tâm ngắm:
     // "nằm trên mặt phẳng ARKit đã xác nhận" và "nằm trên mặt phẳng ARKit vừa
     // đoán ra quanh tia". Người dùng cần thấy khác nhau TRƯỚC cú bấm.
-    test('aimTarget đọc được cả hai tầng tia gói bắn ra', () {
+    test('aimTarget đọc được cả BA tầng tia gói bắn ra', () {
       final geometry = ArMeasure.parseSample({
         'status': 'ready',
         'aimLocked': true,
@@ -196,9 +196,73 @@ void main() {
         'aimLocked': true,
         'aimTarget': 'estimatedPlane',
       });
+      // Tầng thứ ba vào từ 0.6.0. Chuỗi đã đọc được từ trước (enum có đủ ba
+      // giá trị của `ARRaycastQuery.Target` ngay từ đầu), nhưng tầng nền chưa
+      // bao giờ bắn nó ra — nay thì có.
+      final infinite = ArMeasure.parseSample({
+        'status': 'ready',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneInfinite',
+        'aimOvershootMm': 47.5,
+      });
 
       expect(geometry?.aimTarget, ArRaycastTarget.existingPlaneGeometry);
       expect(estimated?.aimTarget, ArRaycastTarget.estimatedPlane);
+      expect(infinite?.aimTarget, ArRaycastTarget.existingPlaneInfinite);
+    });
+
+    /// Cái van của tầng ngoại suy, đo trên tia ĐANG ngắm.
+    ///
+    /// Không có nó thì tầng ba là đúng thứ mà bản trước cấm: một điểm ở cao độ
+    /// mặt bàn, trả về ở chỗ không có mặt bàn, kèm một tâm ngắm khoá chắc.
+    test('aimOvershootMm đọc được khi tia đang ở tầng ngoại suy', () {
+      final s = ArMeasure.parseSample({
+        'status': 'firstPointPlaced',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneInfinite',
+        'aimOvershootMm': 1840.25,
+      });
+
+      expect(s?.aimTarget, ArRaycastTarget.existingPlaneInfinite);
+      expect(s?.aimOvershootMm, 1840.25);
+    });
+
+    // Hai tầng đầu KHÔNG kèm quãng vượt biên, và `null` ở đó đọc đúng nghĩa:
+    // không có gì để vượt, điểm nằm trong biên thật hoặc trên một mặt ước
+    // lượng. Bù 0 là nói "đo được, và bằng không" — một khẳng định khác hẳn.
+    test('thiếu aimOvershootMm thì về null, mẫu vẫn hợp lệ', () {
+      final s = ArMeasure.parseSample({
+        'status': 'ready',
+        'aimLocked': true,
+        'aimTarget': 'existingPlaneGeometry',
+      });
+
+      expect(s?.aimTarget, ArRaycastTarget.existingPlaneGeometry);
+      expect(s?.aimOvershootMm, isNull);
+    });
+
+    test('aimOvershootMm sai kiểu hay không hữu hạn về null, không ném', () {
+      late ArMeasureSample? saiKieu;
+      late ArMeasureSample? voCuc;
+      expect(() {
+        saiKieu = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'existingPlaneInfinite',
+          'aimOvershootMm': 'xa-lam',
+        });
+        voCuc = ArMeasure.parseSample({
+          'status': 'ready',
+          'aimTarget': 'existingPlaneInfinite',
+          'aimOvershootMm': double.infinity,
+        });
+      }, returnsNormally);
+
+      expect(saiKieu?.status, ArMeasureStatus.ready);
+      expect(saiKieu?.aimOvershootMm, isNull);
+      // Vô cực và NaN KHÔNG đi tiếp: mọi phép so sánh với NaN đều `false`, nên
+      // một ngưỡng "vượt quá ngần này thì đừng chốt cung" lặng lẽ không bao giờ
+      // đúng. `null` thì người gọi buộc phải xử lý.
+      expect(voCuc?.aimOvershootMm, isNull);
     });
 
     // Thiếu khoá = tia không trúng gì, và đó cũng là đường của một bản Swift cũ
@@ -471,6 +535,68 @@ void main() {
       expect(p?.planeAlignment, isNull);
       expect(p?.planeWidthMm, isNull);
       expect(p?.planeHeightMm, isNull);
+      expect(
+        p?.overshootMm,
+        isNull,
+        reason:
+            'Mặt ước lượng không có biên nào để vượt. Một con số ở đây đọc ra '
+            '"đã đo quãng vượt biên và nó bằng chừng ấy" — một khẳng định không '
+            'có phép tính nào đứng sau.',
+      );
+    });
+
+    /// Lai lịch của một điểm ĐÃ chấm: nó là điểm quan sát được hay điểm suy ra.
+    ///
+    /// Đây là nửa còn lại của cái van. Tia đang ngắm nói về cú bấm SẮP tới;
+    /// khối này nói về hai cú bấm ĐÃ xảy ra — và một số đo lưu lại rồi đọc sau
+    /// một tuần mà trông y hệt một số đo trên mặt phẳng đã xác nhận thì cái van
+    /// chỉ hoãn được lỗi đúng một tuần.
+    test('điểm ngoại suy mang theo quãng vượt biên của chính nó', () {
+      final s = ArMeasure.parseSample({
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+        'diagnostics': {
+          'points': [
+            {'target': 'existingPlaneGeometry', 'planeWidthMm': 1200.0},
+            {'target': 'existingPlaneInfinite', 'overshootMm': 63.5},
+          ],
+        },
+      });
+
+      final points = s?.diagnostics?.points;
+      expect(points?[0].target, ArRaycastTarget.existingPlaneGeometry);
+      expect(
+        points?[0].overshootMm,
+        isNull,
+        reason: 'điểm nằm TRONG biên thì không có quãng vượt biên nào',
+      );
+      expect(points?[1].target, ArRaycastTarget.existingPlaneInfinite);
+      expect(points?[1].overshootMm, 63.5);
+    });
+
+    test('overshootMm của điểm sai kiểu hay vô cực về null, không ném', () {
+      late ArMeasureSample? s;
+      expect(() {
+        s = ArMeasure.parseSample({
+          'status': 'firstPointPlaced',
+          'diagnostics': {
+            'points': [
+              {'target': 'existingPlaneInfinite', 'overshootMm': 'xa'},
+              {'target': 'existingPlaneInfinite', 'overshootMm': double.nan},
+            ],
+          },
+        });
+      }, returnsNormally);
+
+      expect(s?.diagnostics?.points, hasLength(2));
+      expect(s?.diagnostics?.points[0].overshootMm, isNull);
+      expect(s?.diagnostics?.points[1].overshootMm, isNull);
+      expect(
+        s?.diagnostics?.points[1].target,
+        ArRaycastTarget.existingPlaneInfinite,
+        reason: 'một quãng hỏng không được kéo theo cả lai lịch của điểm',
+      );
     });
 
     // Sáu nhánh bám tách nhau ra vì mỗi nhánh là một giả thuyết KHÁC về vì sao

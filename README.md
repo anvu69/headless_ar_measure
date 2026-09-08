@@ -24,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.5.0
+  headless_ar_measure: ^0.6.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -98,12 +98,13 @@ controller?.dispose();
 ### The crosshair has to say what it is on
 
 `ArMeasureSample.aimTarget` is what a ray from the centre of the screen is
-hitting right now. Three answers, not two:
+hitting right now. Four answers, not two:
 
 | `aimTarget` | What a tap would do | What to draw |
 |---|---|---|
 | `existingPlaneGeometry` | land on a plane ARKit has confirmed | the confident crosshair |
 | `estimatedPlane` | land on a plane ARKit just guessed around the ray | a weaker crosshair — placeable, but the depth can be off |
+| `existingPlaneInfinite` | land on a plane ARKit has confirmed, **extended past its own boundary** | a distinctly different crosshair, plus `aimOvershootMm` — see "Extrapolation announces itself" |
 | `null` | **miss** | the empty crosshair, plus a line telling the user where to aim instead |
 
 `ArMeasureSample.aimLocked` is the older two-value form of the same probe
@@ -142,6 +143,67 @@ happened:
 `notReady` is also what you get when the channel cannot answer at all — a
 missing plugin, a disposed view. Never `missed`: inviting someone to keep
 moving the phone will not revive a dead channel.
+
+### Extrapolation announces itself
+
+Since 0.6.0 the ray has a **third** tier, tried last: `.existingPlaneInfinite`,
+a plane ARKit has already detected, extended past its own boundary. A point from
+that tier is **inferred, not observed** — and this package refused to use it
+until 0.6.0, for a reason that still stands: it extends a tabletop straight
+through whatever you are actually aiming at and returns a point at *tabletop
+height*, and a number that looks normal and is wrong is the worst thing this
+package can hand you.
+
+What changed is that the tier is no longer allowed to look normal. Every
+tier-three hit carries **how far outside the plane's real boundary it landed**:
+
+| Field | Which ray |
+|---|---|
+| `ArMeasureSample.aimOvershootMm` | the ray being aimed right now |
+| `ArPointDiagnostics.overshootMm` | a point that was already placed |
+
+Both are `null` on the other two tiers, and that `null` is a fact rather than a
+gap — a point inside the real boundary, or on a plane ARKit merely estimated,
+has no boundary to overshoot. A `0` there would claim a measurement happened.
+
+Read it as a confidence signal, not a distance to display:
+
+- **tens of millimetres** — a table edge the detected boundary has not grown out
+  to yet. The extrapolation is roughly as good as the plane it came from.
+- **hundreds of millimetres to metres** — the plane has been extended somewhere
+  there is nothing. This is the failure case, and this number is the only thing
+  that reports it.
+
+**The package sets no threshold, deliberately.** Which overshoot counts as "too
+far", and what to do about it — widen the tolerance, refuse to draw a
+conclusion, say so in words — depends on what your app measures and what the
+number is used for. The package reports which tier and how far past the
+boundary; the policy is yours. `tolMm` is unchanged for the same reason.
+
+A hit that cannot state its overshoot is **discarded** and reported as a miss.
+That is also how "never extrapolate before any plane exists" is enforced: with
+no detected plane there is no anchor to extend, so the hit falls out on its own.
+
+On screen the package draws the two kinds of endpoint differently: a filled dot
+for an observed point, an open ring for an extrapolated one — same size, same
+ink. The difference is shape rather than colour because the scene has no lights,
+so a second colour would have to glow, and a glowing colour on a camera feed
+reads as an error rather than as lower confidence. Shape also survives
+colour-blindness and greyscale, and it can be read on one endpoint alone instead
+of needing both on screen to compare.
+
+`captureFrame()` is still bare, so a saved photo carries the distinction only
+through the overlay **you** draw. Everything you need is already on the samples
+stream — `diagnostics.points[i].target` for each placed end, `aimTarget` for the
+live one. `ArMeasure.overlay` deliberately does not repeat the tier: it would be
+a second path saying the same thing at a different rate, and two such paths
+drift apart.
+
+Why the reversal happened at all: on a real device the raw feature-point cloud
+for the whole frame held **26 points, sometimes 2** — around the ray, **1,
+sometimes 0**. That is not enough material for any plane fit, so the choice was
+never "extrapolate or measure correctly". It was extrapolate with a label, or
+measure nothing.
 
 ### The segment is live before the second tap
 
@@ -200,6 +262,7 @@ field.
 | `cameraDistanceMm` | camera centre to the placed point |
 | `rayAngleDeg` | the ray's angle **to the surface**: 90° is dead-on, 0° is grazing |
 | `planeAlignment`, `planeWidthMm`, `planeHeightMm` | the `ARPlaneAnchor` that was hit, if any. All three `null` when the hit landed on an estimated plane |
+| `overshootMm` | how far outside that plane's real boundary the point landed. Non-`null` **only** at `existingPlaneInfinite` — see below |
 
 `ArMeasureDiagnostics.video` sits beside those points and describes the whole
 session rather than one tap: the `width`, `height` and `fps` of the ARKit video

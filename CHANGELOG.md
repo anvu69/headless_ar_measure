@@ -1,3 +1,107 @@
+## 0.6.0
+
+**This release reverses a decision this package had pinned in a test.** Until
+now `raycastFromReticle` tried exactly two targets, and a test named *"two ray
+tiers, in order, and NO infinite-plane tier"* held it there. The reason it gave
+is quoted here in full, because it is still correct:
+
+> `.existingPlaneInfinite` would "rescue" the scene in the device photo — it
+> extends the tabletop through the iPad and returns a point. But that point sits
+> at TABLETOP HEIGHT, not at the iPad's surface, and aimed at a far wall it
+> returns a point somewhere along the extended floor. A number that looks normal
+> and is wrong is the worst failure this package has.
+
+Nothing in that argument is withdrawn. What changed is the three words *looks
+normal*: a tier-three hit is now **only accepted if it can declare how far
+outside the plane's real boundary it landed**, and that distance travels to Dart
+alongside the ray tier. The scene the old test described — a tabletop extended
+through an iPad — now announces itself with a number in the hundreds of
+millimetres instead of arriving silently.
+
+**What forced the reversal** is the 0.5.0 instrument, on a real device: the raw
+feature-point cloud for the **whole frame** held **26 points, sometimes 2**;
+around the ray, **1, sometimes 0**. That is not enough material for any plane
+fit, hand-written or otherwise, so the RANSAC idea 0.5.0 was built to evaluate
+is dead. The real choice was never "extrapolate or measure correctly" — it was
+**"extrapolate with a label, or measure nothing at all"**.
+
+* **A third raycast tier, tried LAST.** `.existingPlaneGeometry`, then
+  `.estimatedPlane`, then `.existingPlaneInfinite`. The first two tiers are
+  byte-for-byte unchanged — they are the path currently producing 4–8mm on tile
+  floors, and nothing here touches it. Order is a contract, pinned by a test that
+  fails on any permutation: an infinite plane hits from nearly every direction,
+  so promoting it would mean the two observed-point tiers are never reached
+  again, and the whole package would quietly switch to measuring inferred points.
+
+* **`overshootMm` — the valve, and the only reason the reversal is legitimate.**
+  When tier three hits, the package measures from the touch point to the nearest
+  **edge** of that same plane's `ARPlaneAnchor.geometry.boundaryVertices`, and
+  ships it in millimetres beside the tier. Tens of millimetres means a table edge
+  the detected boundary has not grown out to yet; hundreds of millimetres to
+  metres is exactly the failure the old test warned about, and it now shows up as
+  a large number instead of nothing at all.
+
+  It arrives on both existing paths, not a new one: `ArMeasureSample.aimOvershootMm`
+  for the ray being aimed right now, and `ArPointDiagnostics.overshootMm` for
+  each placed point. Both are `null` on the other two tiers — and that `null` is a
+  fact, not a gap: a point inside the real boundary, or on a plane ARKit just
+  estimated, has no boundary to overshoot. Filling in `0` there would claim a
+  measurement was taken.
+
+* **A tier-three hit that cannot declare its overshoot is discarded**, returned
+  as a miss. No plane anchor on the result, fewer than three boundary vertices, a
+  non-finite vertex — all of them drop the hit. This is also how "do not
+  extrapolate before any plane has been detected" is enforced, and it is enforced
+  exactly rather than approximately: no plane means no anchor to extend, so the
+  hit falls out on its own. A separate pre-check counting the session's planes
+  would cost more and answer a different question.
+
+* **The extrapolated endpoint draws differently in SceneKit**: an open ring
+  instead of a filled dot, same size, same single ink. The difference is **shape,
+  not colour**, and that is deliberate. The scene has no lights, so every material
+  here is self-illuminated — a second glowing colour on a camera feed reads as an
+  *error*, and an extrapolated point is not an error, it is a placeable point with
+  lower confidence. Colour is also the first thing lost to colour-blindness and to
+  a greyscale print. And two dots in different colours can only be compared when
+  both are on screen at once; hollow-versus-solid reads on each end by itself. The
+  ring is billboarded, because a torus seen edge-on is a thread and seen down its
+  axis is nothing at all.
+
+**`captureFrame()` is still bare**, so the distinction reaches a saved photo only
+through the overlay your app draws. Everything needed for that is on the samples
+stream already: the tier of each placed point in `diagnostics.points[i].target`,
+and the tier of the live end in `aimTarget`. The overlay channel deliberately
+does **not** carry tiers — it would be a second path saying the same thing at a
+different rate, and two such paths drift.
+
+**Tolerance is unchanged, and that is a boundary, not an oversight.** `tolMm` is
+still `max(2mm, 0.5%)` / `max(5mm, 1.5%)`. Widening it for an extrapolated
+endpoint requires deciding how much overshoot is how much doubt, and that depends
+on what is being measured and what the number is used for. The package reports
+the truth — which tier, how far past the boundary — and the policy is the app's.
+
+**Emit-rate cost: none beyond 0.5.0's.** `aimOvershootMm` joins the coalescer key
+because it is the only field that changes while the user pans across an
+extrapolated surface — the status, the limited reason and the tier all sit still
+there, so without it the valve would freeze at its first reading while the ray
+drifted metres away. The 10Hz ceiling from `aimProbeIntervalSeconds` still holds,
+and the floor was already gone in 0.5.0.
+
+**The geometry has a numeric test**, which is new for this package. `PlaneOvershoot`
+lives in its own file importing only `Foundation` and `simd`, so `swiftc` compiles
+and runs it on macOS and `flutter test` checks actual millimetres. This is not
+tidiness: the two wrong implementations it rules out — measuring to the nearest
+**vertex** instead of the nearest **edge**, and comparing a world-space point
+against plane-space vertices without the transform — both leave plausible-looking
+Swift and both return a positive, finite, correctly-scaled millimetre value. On
+the fixture used, the correct answer is 300mm; measuring to a vertex gives
+921.95mm and skipping the transform gives 1656.42mm. No text-reading test
+separates those. The fixture's boundary is deliberately asymmetric, because a
+symmetric one makes both mistakes invisible.
+
+**Not measured on a device yet.** Everything above is a contract and a
+computation; whether extrapolation with a labelled overshoot actually makes the
+black-mousepad scene measurable is a question only a phone answers.
 ## 0.5.0
 
 **This release adds an instrument, not a feature.** Two numbers land in
