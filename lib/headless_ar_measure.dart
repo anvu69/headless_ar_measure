@@ -639,6 +639,19 @@ class ArMeasureOverlay {
   /// tia tâm ngắm **không trúng gì**. Lúc ấy đừng vẽ đoạn nào — giữ lại đoạn
   /// của khung trước là để một đoạn thẳng đứng yên trên màn, và một đoạn đứng
   /// yên đọc ra "đã chấm xong".
+  ///
+  /// Lối thứ ba ấy nói "tia đã trượt **một quãng**", không phải "tia trượt ở
+  /// khung này": từ `0.9.1` tầng native ôm lượt trúng gần nhất khoảng 100 ms
+  /// trước khi buông. Một khung trượt lẻ giữa chuỗi trúng không còn tắt đoạn
+  /// thẳng nữa — ở 60 khung/s nó đọc ra một cái nháy chứ không đọc ra một lời
+  /// cảnh báo. Lời cảnh báo thật vẫn đi đúng nhịp trên
+  /// [ArMeasureSample.aimLocked] và [ArMeasureSample.aimTarget], và **đó** mới
+  /// là chỗ đọc câu "bấm bây giờ thì có trúng không".
+  ///
+  /// Toạ độ cũng đã đi qua một phép làm mượt nhẹ (hằng số thời gian 0,03 s),
+  /// nên nó tụt sau tâm ngắm chừng một centimét trong lúc rê máy và về đúng chỗ
+  /// khi tay dừng lại. Điểm ĐƯỢC CHẤM không đi qua đó: [ArMeasureController]
+  /// bắn một tia mới ở đúng lúc bấm.
   final Offset? pointB;
 
   /// [pointB] là tâm ngắm đang chạy, chưa chấm.

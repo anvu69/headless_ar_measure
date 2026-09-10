@@ -869,17 +869,25 @@ final class ArMeasureSession: NSObject {
   /// Lần dò gần nhất CHẠY, để giãn nhịp dò.
   private var lastAimProbeAt: TimeInterval = 0
 
-  /// Vị trí tia tâm ngắm đang trúng, hệ toạ độ thế giới. `nil` là không trúng gì.
+  /// Đầu SỐNG của đoạn thẳng — vị trí tia tâm ngắm đang trúng, đã lọc theo
+  /// thời gian. Xem [LivePointFilter].
   ///
-  /// Đây là đầu SỐNG của đoạn thẳng, và nó KHÔNG bị lưới lấy mẫu của
-  /// [aimTarget] chặn: trượt một lượt là xoá ngay, ở đúng khung hình ấy. Hai
-  /// thứ đọc cùng một lượt dò nhưng nói hai chuyện khác nhau — tầng nói một
-  /// TRẠNG THÁI ("bấm được rồi"), và một trạng thái đổi hình nhanh hơn 10
-  /// lần/giây thì mắt không đọc ra; điểm này nói một VỊ TRÍ, và giữ lại vị trí
-  /// cũ dù chỉ một nhịp là vẽ một đoạn thẳng tới chỗ không còn gì.
+  /// Nó KHÔNG bị lưới lấy mẫu 10 Hz của [aimTarget] chặn, và không được bị:
+  /// tầng nói một TRẠNG THÁI ("bấm được rồi"), còn cái này nói một VỊ TRÍ, và
+  /// một vị trí lấy mẫu ở 10 Hz thì giật sáu khung một bước.
   ///
-  /// [probeReticle] là chỗ DUY NHẤT ghi vào biến này.
-  private var liveHitPoint: SIMD3<Float>?
+  /// **Nhưng nó cũng không còn là tia THÔ của từng khung, và đó là lượt sửa của
+  /// `0.9.1`.** Bản trước ghi thẳng kết quả raycast vào đây và xoá ngay ở lượt
+  /// trượt đầu tiên, với lý lẽ "giữ lại vị trí cũ dù chỉ một nhịp là vẽ một
+  /// đoạn thẳng tới chỗ không còn gì". Lý lẽ ấy đúng cho một quãng DÀI và sai
+  /// cho một khung: trên máy thật, chuỗi trúng-trượt xen kẽ ở 60 khung/s không
+  /// đọc ra "tia đang trượt" mà đọc ra một cái NHÁY ở đúng đầu mút. Quãng ôm
+  /// 100 ms của bộ lọc nuốt cái nháy ấy và vẫn buông trước khi mắt kịp đọc đoạn
+  /// thẳng thành "đã chấm xong".
+  ///
+  /// [probeReticle] là chỗ DUY NHẤT bơm mẫu vào bộ lọc này; [clearAnchors] là
+  /// chỗ duy nhất buông cứng.
+  private var livePoint = LivePointFilter()
 
   /// Phép đếm điểm đặc trưng của khung hình đã sinh ra lượt lấy mẫu ngắm gần
   /// nhất. `nil` là chưa đếm lượt nào, hoặc ARKit không giao đám mây điểm.
@@ -1741,7 +1749,7 @@ final class ArMeasureSession: NSObject {
 
   /// Dò xem tia từ tâm ngắm đang trúng gì, và ghi lại vị trí trúng.
   ///
-  /// Chỗ DUY NHẤT ghi vào [liveHitPoint]. Hai thứ đọc lượt dò này —
+  /// Chỗ DUY NHẤT bơm mẫu vào [livePoint]. Hai thứ đọc lượt dò này —
   /// [refreshAimTarget] lấy ra một tầng, [refreshOverlay] lấy ra một vị trí —
   /// nhưng chỉ có MỘT lượt raycast mỗi khung hình, và đó là chủ đích: raycast là
   /// việc thật, không phải đọc một biến.
@@ -1770,7 +1778,16 @@ final class ArMeasureSession: NSObject {
     // hết sạch ý nghĩa. KHÔNG dò: một lượt raycast ở đây là công đổ đi.
     let status = currentStatus()
     guard status == .ready || status == .firstPointPlaced else {
-      liveHitPoint = nil
+      // Qua quãng ôm chứ không xoá cứng, và chỗ này là chỗ nó đáng giá nhất:
+      // `needsMotion` chớp lên vì nửa giây rung tay, mà rung tay là đúng thứ
+      // xảy ra trong lúc rê máy tìm điểm thứ hai. [coordinatesAreTrustworthy]
+      // đã cố ý KHÔNG cho `needsMotion` ẩn hình vẽ, vì "cho hình biến mất từng
+      // nhịp như thế còn khó đọc hơn" — xoá thẳng ở đây là dựng lại đúng cái
+      // nhấp nháy ấy qua cửa sau, cho riêng đầu sống.
+      //
+      // Quãng ôm 100 ms cố ý KHÔNG phủ nổi một quãng `needsMotion` dài: ở đó
+      // đoạn thẳng nên biến mất thật.
+      livePoint.miss(at: now)
       return .unavailable
     }
 
@@ -1785,17 +1802,31 @@ final class ArMeasureSession: NSObject {
     lastAimProbeAt = now
 
     guard let hit = raycastFromReticle() else {
-      // Trượt là XOÁ ngay, không có ân hạn: điểm này nói ra một VỊ TRÍ, và giữ
-      // lại vị trí của khung trước là vẽ một đoạn thẳng tới chỗ không còn gì —
-      // một đoạn đứng yên giữa lúc người dùng vẫn đang rê máy, đọc ra "đã chấm
-      // xong". Giãn nhịp là chuyện của cái TẦNG, ở [refreshAimTarget].
-      liveHitPoint = nil
+      // Trượt đi qua quãng ÔM của bộ lọc, không xoá thẳng — xem [LivePointFilter].
+      //
+      // Bản trước xoá ngay, và lý lẽ của nó vẫn đúng ở chỗ nó nhắm tới: giữ
+      // một vị trí cũ LÂU là vẽ một đoạn thẳng tới chỗ không còn gì, đứng yên
+      // giữa lúc người dùng vẫn đang rê máy, đọc ra "đã chấm xong". Nhưng một
+      // KHUNG không phải một quãng lâu, và cái giá của lời xoá ngay ấy đã được
+      // người dùng gọi tên trên máy thật: ở 60 khung/s, chuỗi trúng-trượt xen
+      // kẽ đọc ra một cái nháy liên tục ở đầu mút.
+      //
+      // Cái nháy không nói ra thông tin nào; nó chỉ trông như hỏng. Còn thông
+      // tin "tia đang trượt" thì vẫn đi ra ngoài, nguyên vẹn và ĐÚNG NHỊP, qua
+      // `aimTarget` ở [refreshAimTarget] — nên quãng ôm này không nuốt mất một
+      // lời cảnh báo nào.
+      livePoint.miss(at: now)
       return .missed
     }
 
     let column = hit.result.worldTransform.columns.3
     let point = SIMD3<Float>(column.x, column.y, column.z)
-    liveHitPoint = point
+    // Vào bộ lọc, KHÔNG vẽ thẳng: ba tầng tia được thử theo thứ tự, nên hai
+    // khung liên tiếp trả về hai BỀ MẶT khác nhau được — và cả hai đều báo
+    // "trúng". Điểm nhảy hàng centimét mà không có gì trong `target` bắt buộc
+    // phải đổi theo. Phần `point` trả về dưới đây vẫn là mẫu THÔ: nó nuôi tầng
+    // chẩn đoán, và một con số chẩn đoán đã làm mượt là một con số nói dối.
+    livePoint.hit(point, at: now)
 
     let camColumn = frame.camera.transform.columns.3
     return .hit(
@@ -2098,11 +2129,27 @@ final class ArMeasureSession: NSObject {
 
   /// Chiếu một điểm thế giới xuống toạ độ MÀN, đơn vị **point**.
   ///
-  /// `SCNSceneRenderer.projectPoint` trả toạ độ theo **pixel của lớp vẽ**, còn
-  /// Flutter làm việc bằng point — nên phép chia cho `contentScaleFactor` dưới
-  /// đây LÀ một phép đổi đơn vị, không phải một lượt làm tròn cho đẹp. Ai gặp
-  /// cảnh nhãn Flutter nằm lệch đúng ba lần so với đoạn thẳng SceneKit trên một
-  /// máy @3x thì chỗ phải sửa là ĐÚNG dòng này, không phải chỗ vẽ.
+  /// **Không đổi đơn vị ở đây, và lần này là có bằng chứng.**
+  /// `SCNSceneRenderer.projectPoint` trả toạ độ theo hệ của **view**, và hệ ấy
+  /// ĐÃ là point. Toạ độ đi thẳng ra, không nhân và không chia.
+  ///
+  /// Từ `0.2.0` tới `0.9.0` chỗ này CHIA cho `contentScaleFactor`, với lý lẽ
+  /// "`projectPoint` trả pixel của lớp vẽ". Người viết lượt ấy tự khai là không
+  /// chắc và ghi sẵn triệu chứng nếu sai: *"nhãn lệch khỏi đoạn đúng một hệ số
+  /// nguyên (2 hoặc 3)"*. Triệu chứng ấy đã tới, trên hai máy, với đúng hai hệ
+  /// số ấy:
+  ///
+  /// * **iPhone 16 Plus (@3x)**, đo trên ảnh chụp màn hình: đường kẻ ở
+  ///   `y ≈ 480 pt`, hộp số ở `y ≈ 175 pt`. `480 / 3 ≈ 160`, cộng quãng nhãn
+  ///   đặt phía trên đường kẻ (~15 pt), ra đúng 175.
+  /// * **iPad Air M3 (@2x)**: nhãn nằm góc trên bên trái trong khi trung điểm
+  ///   đoạn ở giữa màn — chia đôi toạ độ giữa màn ra đúng góc phần tư ấy.
+  ///
+  /// Hai máy, hai hệ số, một công thức. Ba chỗ trong tệp này nay cùng một hệ:
+  /// `sceneView.bounds` (tâm ngắm bắn tia) là point, phép chiếu này là point,
+  /// và [captureFrame] **nhân** hệ số điểm ảnh lên để ra ảnh — đó là chỗ DUY
+  /// NHẤT còn được đụng tới `contentScaleFactor`, và nó đổi đơn vị theo chiều
+  /// ngược lại. Đừng "dọn cho nhất quán" hai chỗ ấy về một.
   ///
   /// `nil` khi điểm nằm ngoài khối nhìn — chủ yếu là **sau lưng camera**. Phép
   /// chiếu vẫn trả về một toạ độ x, y trông hoàn toàn hợp lệ cho những điểm ấy:
@@ -2120,12 +2167,7 @@ final class ArMeasureSession: NSObject {
     guard projected.z >= 0, projected.z <= 1 else { return nil }
     guard projected.x.isFinite, projected.y.isFinite else { return nil }
 
-    // Chưa gắn vào cây view thì `contentScaleFactor` có thể là 0, và chia cho 0
-    // ra vô cực — một toạ độ mà `Canvas.drawLine` bên Dart chỉ lặng lẽ không vẽ.
-    let scale = sceneView.contentScaleFactor
-    guard scale > 0 else { return nil }
-
-    return CGPoint(x: CGFloat(projected.x) / scale, y: CGFloat(projected.y) / scale)
+    return CGPoint(x: CGFloat(projected.x), y: CGFloat(projected.y))
   }
 
   /// Cập nhật hình vẽ 3D và bắn khung lớp phủ.
@@ -2149,7 +2191,7 @@ final class ArMeasureSession: NSObject {
     let placed = trustworthy ? currentMarks() : []
     // Đầu sống chỉ có nghĩa khi đã chấm ĐÚNG một điểm. Không điểm nào thì không
     // có gì để nối tới nó; đủ hai điểm thì đoạn thẳng đã nối hai điểm thật.
-    let live = placed.count == 1 ? liveHitPoint : nil
+    let live = placed.count == 1 ? livePoint.point : nil
 
     measureNodes.update(points: placed, live: live)
 
@@ -2582,7 +2624,12 @@ final class ArMeasureSession: NSObject {
     lastMm = nil
     // Đầu sống của đoạn thẳng đọc từ lượt dò của khung hình, và `reset()` dựng
     // lại cả hệ toạ độ — điểm của lượt dò trước nằm trong hệ toạ độ CŨ.
-    liveHitPoint = nil
+    //
+    // XOÁ CỨNG, không đi qua quãng ôm: quãng ôm nói "chưa dò lại được", còn ở
+    // đây điểm cũ không sai vì chưa dò lại mà sai vì cái thế giới nó đo trong
+    // đó đã không còn. Ôm thêm 100 ms là vẽ tới một toạ độ trông hoàn toàn bình
+    // thường và không còn liên quan gì tới thứ đang ở trước ống kính.
+    livePoint.clear()
   }
 }
 

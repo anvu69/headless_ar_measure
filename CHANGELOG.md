@@ -1,3 +1,145 @@
+## 0.9.1
+
+Two fixes. Both are for things you can only see on a device, and both had
+already shipped.
+
+### The overlay coordinates were divided by the screen scale
+
+**What you saw.** The Flutter label hung off `ArMeasure.overlay` sat in the
+top-left corner of the screen while the SceneKit segment — same data, same
+frame — sat where it belonged. On a @3x phone the label was a third of the way
+down; on a @2x tablet, half.
+
+Since 0.2.0 `projectToScreen` divided the result of
+`SCNSceneRenderer.projectPoint` by `contentScaleFactor`. That note said its
+author was **not sure**, and wrote down the symptom to watch for: *"the label off
+the segment by exactly an integer factor (2 or 3)"*. The symptom arrived, on two
+devices, with exactly those two factors.
+
+| Device | Scale | Measurement |
+|---|---|---|
+| iPhone 16 Plus | @3x | screenshot: drawn line at `y ≈ 480 pt`, number box at `y ≈ 175 pt`. `480 / 3 ≈ 160`, plus the ~15 pt the label sits above the line, is 175 |
+| iPad Air M3 | @2x | label in the top-left quadrant while the segment's midpoint was mid-screen — halving a mid-screen coordinate lands exactly there |
+
+Two devices, two factors, one formula. `projectPoint` returns coordinates in the
+**view's** space, and that space is already points. The division is gone.
+
+**Every other scale site was checked, and none of them needed the same
+treatment:**
+
+* `sceneView.bounds`, whose midpoint is the reticle handed to `raycastQuery`, is
+  in points — which is the unit that API wants. It was already right, and it is
+  now consistent with the projection instead of one factor away from it.
+* `captureFrame` still **multiplies** by `contentScaleFactor`, and must: the JPEG
+  is measured in pixels while the overlay is measured in points, so an overlay
+  coordinate maps onto the image by exactly one multiplication. That is a real
+  unit conversion running the other way, and it is now the only place in the
+  package that touches the scale factor at all.
+* `UIScreen.main.scale` and `nativeScale` appear nowhere, and never did.
+
+**The contract test that guarded the division now guards its absence**, in both
+directions: no division *and* no multiplication in `projectToScreen`, plus the
+multiplication in `captureFrame` still standing, so nobody "cleans up" the two
+into one. What the test used to assert, and why, is kept in the file next to
+what it asserts now — a test that reversed has to say what it used to say, or
+the next person re-derives the wrong answer from first principles exactly the way
+this one did.
+
+### The live endpoint flickered, and the drawing code was not the reason
+
+**What you saw.** With one point down and the phone panning, at 60fps: *"the
+segment still isn't very smooth. Especially at the endpoint it can flicker
+continuously."*
+
+**The first hypothesis was that the draw path rebuilt nodes every frame** —
+`adoptUpdatedAnchors` hands out a new `ARAnchor` object for the same identifier,
+so a node removed-and-re-added, or geometry rebuilt, would give one blank beat
+per frame at exactly that endpoint. **That is not what happens.** Three separate
+things say so:
+
+* `ArMeasureNodes` builds all five nodes once in `init` and afterwards only
+  assigns `simdPosition`, `simdOrientation`, a cylinder `height` and `isHidden`.
+  It has never allocated per frame;
+* `ArMeasureNodeSuppressor` returns `nil` from `renderer(_:nodeFor:)` for every
+  anchor, so ARKit builds no node for the measurement anchors either;
+* `adoptUpdatedAnchors` only swaps objects inside an array, and on the frame path
+  it is reached only when **both** points are down — which is after the live
+  endpoint has stopped existing.
+
+A contract test now pins the first of those, because breaking it would be
+silent: a node rebuilt every frame still renders the same picture in a
+screenshot, and the only thing that says otherwise is a flicker on a device.
+
+**The real mechanism is upstream of the drawing: the live endpoint is a raw
+raycast, sixty times a second, with nothing on the time axis at all.** Two
+effects come out of that, and they match the two words in the report:
+
+1. **Flicker.** A frame where the ray missed cleared the endpoint outright, so
+   the whole segment vanished for one frame and came back. A hit-miss-hit
+   sequence at 60fps does not read as "the ray is missing" — it reads as a
+   blink. Clearing on the first miss was a deliberate choice, and its reasoning
+   ("a segment left standing where the last hit was reads as a finished
+   measurement") is right about a *long* hold and wrong about a *single frame*.
+2. **Not smooth.** `raycastFromReticle` tries three tiers in order, so two
+   consecutive frames can resolve against two **different surfaces** — a
+   confirmed plane on one, a plane ARKit estimated from feature points on the
+   next — and both report a hit. The point jumps by centimetres with nothing in
+   the tier field obliged to change.
+
+Both are noise on the time axis, so the fix is on the time axis:
+`LivePoint.swift`, a `LivePointFilter` that holds the last hit for **100 ms**
+before letting go, and blends samples with a **0.03 s** time constant.
+
+**The cost is lag, and it is written down as a number instead of left inside a
+constant.** At 60fps, panning at a step of 8 mm per frame (≈0.48 m/s), the
+steady-state lag is `d·(1−α)/α` with `α = 1 − e^(−dt/τ)` — **10.8 mm**. The same
+constants squash 20 mm peak-to-peak alternating noise down to **5.4 mm**. Both
+numbers are asserted by `test/live_point_test.dart`, which compiles
+`LivePoint.swift` with `swiftc` and runs it — the same trick `PlaneOvershoot.swift`
+and `VideoFormatChoice.swift` use, and the reason this file imports `Foundation`
+and `simd` and nothing else. Raise τ and the test says what you just bought and
+what you paid: τ = 0.06 s is 23 mm of lag, which reads as a segment dragged
+behind the crosshair.
+
+**Three things the filter deliberately does not do.**
+
+* **It does not soften the warning.** "Tap now and it will land" travels on
+  `aimLocked` / `aimTarget`, and those still go `null` on the miss, on their own
+  10Hz grid. The hold changes what is *drawn*, not what is *claimed*.
+* **It does not move the point you place.** `placePoint()` fires its own ray at
+  the moment of the tap and never reads the live endpoint, so neither the hold
+  nor the smoothing can push a placed point anywhere. And because the smoothing
+  converges once the hand stops — which is what a hand does before tapping — the
+  drawn endpoint and the point about to be placed agree at the moment it matters.
+* **It does not survive a reset.** `clearAnchors()` calls `clear()`, not
+  `miss()`: `reset()` rebuilds the coordinate system, so the previous hit is a
+  coordinate in a world that no longer exists. Holding it for 100 ms there would
+  draw a perfectly ordinary-looking segment to a place that means nothing.
+
+The hold also covers the branch that gave up whenever the status left
+`ready`/`firstPointPlaced`, and that is probably where most of the flicker lived:
+`needsMotion` flares for half a second of hand shake, and hand shake is exactly
+what happens while panning toward the second point. `coordinatesAreTrustworthy()`
+had already decided — in writing — that `needsMotion` must not blank the drawing,
+because making it disappear beat by beat is harder to read than leaving it up;
+clearing the live endpoint on it rebuilt that same flicker through the back door.
+The 100 ms window deliberately does **not** cover a long `needsMotion` stretch:
+there the ray really is missing, and the segment should really go away.
+
+### Neither fix has been verified on a device
+
+The projection fix has two device measurements *of the old behaviour* and
+arithmetic for the new one; nobody has yet held a phone and confirmed the label
+lands on the segment. The flicker fix has a mechanism, a numeric test of the
+filter in isolation, and no device run at all — a filter cannot be checked by
+screenshot, because the thing it fixes is a beat and not a picture.
+
+No wire fields were added, removed or changed, and no Dart API changed shape.
+What changed is the *value* in `ArMeasureOverlay.pointA`/`pointB` — by the
+device's scale factor, on every device — and how quickly `pointB` becomes `null`.
+
+Not published to pub.dev.
+
 ## 0.9.0
 
 **The video format is now chosen by frame rate first**, and among the formats

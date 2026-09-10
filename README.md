@@ -291,9 +291,24 @@ package reports which plane; the policy is yours.
 
 Once the first point is down, the package draws a segment from it to whatever
 the centre ray is currently hitting, refreshed every ARKit frame — the way
-Apple's Measure app behaves. When the ray hits nothing, the segment is **not
-drawn at all**; a segment left standing where the last hit was reads as a
-finished measurement.
+Apple's Measure app behaves. When the ray has been hitting nothing for **more
+than about 100 ms**, the segment is **not drawn at all**; a segment left
+standing where the last hit was reads as a finished measurement.
+
+That 100 ms window is deliberate, and 0.9.1 added it. The live end is a fresh
+raycast sixty times a second, and two things ride on it: single frames where the
+ray misses, and consecutive frames that resolve against *different surfaces*
+because the three raycast tiers are tried in order. Dropping the segment on the
+first miss turns a hit-miss-hit sequence into a **flicker** at the endpoint,
+which is what it looks like on a device — not "the ray is missing". So the live
+end is held briefly across dropouts and lightly smoothed (0.03 s time constant,
+roughly a centimetre of lag while panning, zero once the hand stops).
+
+Two things this does *not* touch. The promise "tap now and it will land" is
+`aimLocked` / `aimTarget` on the samples stream, and those still go to `null` on
+the miss, on their own 10Hz grid — the hold does not swallow a warning. And
+`placePoint()` fires its own ray at the moment of the tap, so neither the hold
+nor the smoothing moves the point you actually place.
 
 `ArMeasure.overlay` is the same thing in Flutter's coordinates, for the label
 you want to hang off it:

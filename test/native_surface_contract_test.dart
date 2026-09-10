@@ -118,6 +118,43 @@ void main() {
             'định. Một transform NaN thì SceneKit bỏ vẽ, im lặng.',
       );
     });
+
+    // Ca này ghi lại một lượt ĐIỀU TRA, không phải một lượt sửa: đi tìm nguyên
+    // nhân nhấp nháy ở đầu mút (0.9.1), giả thuyết đầu tiên là đường vẽ dựng
+    // lại node ở mỗi khung — gỡ rồi thêm, hoặc dựng lại `SCNGeometry`. Giả
+    // thuyết ấy SAI: [ArMeasureNodes] dựng đủ năm node một lần ở `init` rồi chỉ
+    // dời chỗ và ẩn/hiện, và [ArMeasureNodeSuppressor] trả `nil` cho mọi anchor
+    // nên ARKit cũng không dựng node nào. Nguyên nhân thật nằm ở NGUỒN của toạ
+    // độ, không ở chỗ vẽ — xem nhóm 'đoạn thẳng sống và lớp phủ'.
+    //
+    // Ghim lại vì hỏng theo hướng ấy thì CÂM: một node dựng lại mỗi khung vẫn
+    // vẽ ra đúng hình ấy trên ảnh tĩnh, và thứ duy nhất nói ra là một cái nháy
+    // mà chỉ máy thật thấy được.
+    test('lượt cập nhật hình KHÔNG dựng lại node hay hình học nào', () {
+      final body = _withoutComments(
+        _swiftMethodBody(
+          sessionSource,
+          'func update(points: [ArMeasureMark], live: SIMD3<Float>?)',
+        ),
+      );
+      for (final cam in [
+        'SCNNode(',
+        'SCNSphere(',
+        'SCNTorus(',
+        'SCNCylinder(',
+        'addChildNode(',
+        'removeFromParentNode(',
+      ]) {
+        expect(
+          body,
+          isNot(contains(cam)),
+          reason:
+              '`$cam` trong lượt cập nhật là một lượt cấp phát trên luồng vẽ, '
+              'ở đúng nhịp đoạn thẳng đang trôi. Node phải dựng một lần ở '
+              '`init` rồi chỉ đổi `simdPosition`/`isHidden`.',
+        );
+      }
+    });
   });
 
   group('hướng dẫn quét bề mặt', () {
@@ -418,22 +455,74 @@ void main() {
       );
     });
 
-    // Hai ca dưới đây đọc thân hàm ĐÃ BÓC CHÚ THÍCH, và đó không phải chuyện
+    // Ba ca dưới đây đọc thân hàm ĐÃ BÓC CHÚ THÍCH, và đó không phải chuyện
     // gọn gàng: cả hai chữ được canh — `contentScaleFactor` và `projected.z` —
-    // đều xuất hiện trong chú thích giải thích chính chúng. Không bóc thì xoá
-    // sạch phép chia mà ca kiểm vẫn xanh, vì lời giải thích còn nằm đó.
-    test('phép chiếu đổi PIXEL sang POINT bằng contentScaleFactor', () {
+    // đều xuất hiện trong chú thích giải thích chính chúng. Không bóc thì ca
+    // kiểm xanh nhờ lời chú thích, kể cả sau khi dòng mã đã bị xoá — và, từ
+    // 0.9.1, kể cả sau khi nó đã QUAY LẠI.
+    //
+    // **Ca đầu đã ĐỔI CHIỀU ở 0.9.1.** Chiều cũ ghi lại đây để không ai đi lại
+    // vòng ấy: từ 0.2.0 tới 0.9.0 ca này canh chuỗi `/ scale`, với lý lẽ
+    // "`projectPoint` trả PIXEL của lớp vẽ". Người viết lượt ấy tự khai là
+    // KHÔNG chắc, và ghi sẵn triệu chứng nếu sai: *"nhãn lệch khỏi đoạn đúng
+    // một hệ số nguyên (2 hoặc 3)"*. Triệu chứng ấy đã tới, trên hai máy, với
+    // đúng hai hệ số ấy:
+    //
+    // * **iPhone 16 Plus (@3x)**, đo trên ảnh chụp màn hình: đường kẻ ở
+    //   `y ≈ 480 pt`, hộp số ở `y ≈ 175 pt`. `480 / 3 ≈ 160`, cộng quãng nhãn
+    //   đặt phía trên đường kẻ (~15 pt), ra đúng 175.
+    // * **iPad Air M3 (@2x)**: nhãn nằm góc trên bên trái trong khi trung điểm
+    //   đoạn ở giữa màn — chia đôi toạ độ giữa màn ra đúng góc phần tư ấy.
+    //
+    // Hai máy, hai hệ số, một công thức: `SCNSceneRenderer.projectPoint` trả
+    // toạ độ theo hệ của **VIEW** (point), không phải điểm ảnh. `bounds` dùng
+    // để bắn tia cũng là point, và [captureFrame] thì NHÂN hệ số ấy lên để ra
+    // ảnh — nên sau lượt bỏ này cả ba chỗ cùng một hệ.
+    test('phép chiếu KHÔNG đổi đơn vị — projectPoint đã trả point', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func projectToScreen('),
+      );
+      expect(
+        body,
+        isNot(contains('contentScaleFactor')),
+        reason:
+            'Phép chia này đã ship từ 0.2.0 và đã sai trên hai máy thật: nhãn '
+            'Flutter rơi vào ô trên-trái của màn trong khi đoạn thẳng SceneKit '
+            'nằm đúng chỗ — lệch đúng hệ số điểm ảnh của máy (3 trên iPhone 16 '
+            'Plus, 2 trên iPad Air M3). `projectPoint` trả toạ độ theo hệ của '
+            'view, và hệ ấy ĐÃ là point.',
+      );
+      expect(
+        body,
+        isNot(contains('/ scale')),
+        reason:
+            'Cùng một lỗi, viết bằng một cái tên biến khác. Chia cho bất cứ hệ '
+            'số điểm ảnh nào ở đây là dựng lại đúng cảnh 0.2.0 đã ship.',
+      );
+      expect(
+        body,
+        contains('CGPoint(x: CGFloat(projected.x), y: CGFloat(projected.y))'),
+        reason:
+            'Toạ độ phải đi thẳng ra, không nhân và không chia. Ca trên chỉ '
+            'chặn phép CHIA; không có ca này thì một phép NHÂN — cùng hệ số, '
+            'lệch ngược chiều — vẫn qua được cả hai.',
+      );
+    });
+
+    // Chỗ DUY NHẤT còn được đụng tới `contentScaleFactor`, và nó phải còn:
+    // ảnh xuất ra đo bằng ĐIỂM ẢNH, khung lớp phủ đo bằng POINT. Bỏ phép nhân
+    // ở đây "cho nhất quán" với lượt bỏ phép chia ở trên là ra một tấm ảnh nhỏ
+    // bằng 1/2 hay 1/3 khung ngắm — và lớp phủ vẽ đè lên nó lệch đúng chừng ấy.
+    test('ảnh chụp VẪN nhân contentScaleFactor — hai chỗ, hai đơn vị', () {
       expect(
         _withoutComments(
-          _swiftMethodBody(sessionSource, 'private func projectToScreen('),
+          _swiftMethodBody(sessionSource, 'func captureFrame('),
         ),
-        contains('/ scale'),
+        contains('contentScaleFactor'),
         reason:
-            '`SCNSceneRenderer.projectPoint` trả toạ độ theo PIXEL của lớp vẽ, '
-            'Flutter thì làm việc bằng point. Bỏ phép chia là trên máy @3x mọi '
-            'toạ độ lớn gấp ba: nhãn bay ra ngoài màn trong khi đoạn thẳng '
-            'SceneKit vẫn nằm đúng chỗ — hai thứ cùng một dữ liệu, lệch nhau '
-            'đúng một hệ số nguyên, và không có gì nói ra vì sao.',
+            'Cỡ ảnh là cỡ khung ngắm (point) NHÂN hệ số điểm ảnh. Đây là phép '
+            'đổi đơn vị thật, ngược chiều với phép chia vừa bị bỏ ở '
+            '`projectToScreen`, và hai chỗ ấy không được nhầm với nhau.',
       );
     });
 
@@ -468,25 +557,43 @@ void main() {
       );
     });
 
-    test('tia trượt thì XOÁ điểm sống, không giữ lại điểm của khung trước', () {
-      final body = _swiftMethodBody(
-        sessionSource,
-        'private func probeReticle(',
+    /// Ca này đã ĐỔI CHIỀU ở 0.9.1. Chiều cũ giữ lại đây vì lý lẽ của nó vẫn
+    /// đúng ở chỗ nó nhắm tới, và người sau phải đọc được cả hai:
+    ///
+    /// * **Tới 0.9.0** ca canh `liveHitPoint = nil` ở nhánh trượt — "giữ điểm
+    ///   cũ là để một đoạn thẳng ĐỨNG YÊN trên màn giữa lúc người dùng vẫn đang
+    ///   rê máy, và một đoạn đứng yên đọc ra *đã chấm xong*".
+    /// * **Từ 0.9.1** nhánh ấy đi qua quãng ôm 100 ms của [LivePointFilter].
+    ///   Lý lẽ cũ nói về một quãng DÀI; một KHUNG không phải một quãng dài, và
+    ///   cái giá của lời xoá-ngay ấy đã được người dùng gọi tên trên máy thật:
+    ///   ở 60 khung/s, chuỗi trúng-trượt xen kẽ đọc ra một cái nháy liên tục ở
+    ///   đầu mút.
+    ///
+    /// Nên ca này nay canh CẢ HAI phía: có ôm, và ôm CÓ HẠN.
+    test('tia trượt thì ôm CÓ HẠN, không xoá ngay và không giữ mãi', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
       );
-      // Cắt từ lượt raycast trở đi: `liveHitPoint = nil` cũng nằm ở nhánh
-      // "trạng thái không cho chấm" phía trên, nên tìm trong cả thân hàm thì
-      // xoá sạch nhánh TRƯỢT mà ca kiểm vẫn xanh.
+      // Cắt từ lượt raycast trở đi: nhánh "trạng thái không cho chấm" phía trên
+      // cũng buông điểm sống, nên tìm trong cả thân hàm thì xoá sạch nhánh
+      // TRƯỢT mà ca kiểm vẫn xanh.
       final afterRaycast = body.substring(body.indexOf('raycastFromReticle()'));
 
       expect(
         afterRaycast,
-        contains('liveHitPoint = nil'),
+        contains('livePoint.miss('),
         reason:
-            'Giữ điểm cũ là để một đoạn thẳng ĐỨNG YÊN trên màn giữa lúc người '
-            'dùng vẫn đang rê máy — và một đoạn đứng yên đọc ra "đã chấm xong". '
-            'Ở đây khác tầng tâm ngắm: tầng lấy mẫu trên lưới 10 Hz để mắt đọc '
-            'kịp, còn đoạn thẳng thì đi theo từng khung hình, vì nó nói ra một '
-            'VỊ TRÍ chứ không phải một trạng thái.',
+            'Nhánh trượt phải BÁO cho bộ lọc. Bỏ qua nó là ôm vô thời hạn — '
+            'đoạn thẳng đứng yên trên màn giữa lúc người dùng vẫn đang rê máy, '
+            'và một đoạn đứng yên đọc ra "đã chấm xong".',
+      );
+      expect(
+        afterRaycast,
+        isNot(contains('livePoint.clear()')),
+        reason:
+            'Buông CỨNG ở nhánh trượt là quay về đúng bản 0.9.0: đoạn thẳng tắt '
+            'hẳn một khung rồi bật lại. Quãng ôm nằm trong bộ lọc, và `clear()` '
+            'đi vòng qua nó.',
       );
     });
 
@@ -563,6 +670,98 @@ void main() {
         _swiftMethodBody(sessionSource, 'private func refreshOverlay('),
         contains('distanceMm(from:'),
       );
+    });
+
+    /// Nguyên nhân THẬT của lượt nhấp nháy ở đầu mút (0.9.1).
+    ///
+    /// Đường vẽ đã đúng từ trước — xem ca 'lượt cập nhật hình KHÔNG dựng lại
+    /// node hay hình học nào'. Thứ nháy là NGUỒN của toạ độ: `probeReticle`
+    /// bắn một tia mới mỗi khung hình khi đang có đoạn sống, và
+    ///
+    /// * một khung TRƯỢT xoá thẳng đầu sống → cả đoạn thẳng ẩn đi đúng một
+    ///   khung rồi hiện lại. Ở 60 khung/s, một chuỗi trúng-trượt xen kẽ đọc ra
+    ///   một cái nháy liên tục, đúng ở đầu mút;
+    /// * ba tầng tia được thử theo thứ tự, nên hai khung liên tiếp có thể trả
+    ///   về hai BỀ MẶT khác nhau — điểm nhảy hàng centimét mà vẫn "trúng".
+    ///
+    /// Cả hai đều là nhiễu THỜI GIAN, nên lời chữa cũng nằm ở trục thời gian:
+    /// [LivePointFilter]. Ghim ở đây là ghim chỗ NỐI — phép lọc có ca kiểm số
+    /// riêng (`test/live_point_test.dart`), còn ca này canh chuyện nó thật sự
+    /// được gọi.
+    test('đầu sống đi qua bộ lọc thời gian, không phải tia thô mỗi khung', () {
+      final body = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
+      );
+      expect(
+        body,
+        contains('livePoint.miss('),
+        reason:
+            'Một khung trượt phải đi qua quãng ôm của bộ lọc. Gán thẳng `nil` '
+            'là đúng cái đã ship: đoạn thẳng tắt hẳn một khung rồi bật lại, và '
+            'ở 60 khung/s mắt đọc ra một cái nháy chứ không đọc ra "tia trượt".',
+      );
+      expect(
+        body,
+        contains('livePoint.hit('),
+        reason:
+            'Lượt trúng cũng phải đi qua bộ lọc, không ghi thẳng vào chỗ vẽ. '
+            'Chỉ lọc nhánh trượt là chữa cái nháy mà để nguyên cái giật.',
+      );
+      expect(
+        body,
+        isNot(contains('liveHitPoint = nil')),
+        reason:
+            'Lối cũ. Còn một dòng ấy là còn một đường vòng qua bộ lọc, và '
+            'đường vòng ấy nháy y như trước.',
+      );
+
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func refreshOverlay('),
+        ),
+        contains('livePoint.point'),
+        reason:
+            'Chỗ vẽ phải đọc giá trị ĐÃ LỌC. Đọc một biến thô nào khác là dựng '
+            'hai nguồn sự thật cho cùng một đầu mút.',
+      );
+    });
+
+    test('bỏ hết điểm thì XOÁ CỨNG đầu sống, không ôm', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func clearAnchors()'),
+        ),
+        contains('livePoint.clear()'),
+        reason:
+            '`reset()` dựng lại cả hệ toạ độ, nên điểm của lượt dò trước nằm '
+            'trong hệ CŨ. Ôm nó thêm 100 ms là vẽ một đoạn thẳng tới một toạ độ '
+            'thuộc về một thế giới không còn nữa — và nó trông hoàn toàn bình '
+            'thường.',
+      );
+    });
+
+    test('quãng ôm ngắn hơn hẳn quãng đọc ra "đã chấm xong"', () {
+      final filterSource = File(
+        'ios/headless_ar_measure/Sources/headless_ar_measure/LivePoint.swift',
+      ).readAsStringSync();
+      expect(
+        filterSource,
+        contains('holdSeconds: TimeInterval = 0.10'),
+        reason:
+            'Quãng ôm là một lời đánh đổi có hai đầu, và cả hai đầu đều hỏng '
+            'nhìn thấy được. Ngắn quá thì không nuốt nổi một khung trượt; dài '
+            'quá thì đoạn thẳng ĐỨNG YÊN giữa lúc người dùng còn đang rê máy, '
+            'và một đoạn đứng yên đọc ra "đã chấm xong". 100 ms nằm trên ngưỡng '
+            'sáu khung ở 60 Hz và dưới ngưỡng mắt đọc ra một đoạn bị đóng băng.',
+      );
+      expect(
+        filterSource,
+        isNot(contains('import ARKit')),
+        reason:
+            'Nhập ARKit là mất cả ca kiểm số: `swiftc` trên macOS không dịch '
+            'nổi tệp, và phép lọc quay về chỗ chỉ máy iOS thật kiểm được.',
+      );
+      expect(filterSource, isNot(contains('import UIKit')));
     });
   });
 
@@ -1742,9 +1941,13 @@ String _swiftMethodBody(String source, String signature) {
 /// Bỏ mọi chú thích `//` khỏi một đoạn mã Swift.
 ///
 /// Cần thiết ở đúng những chỗ mà chữ được canh cũng là chữ dùng để GIẢI THÍCH
-/// nó — `contentScaleFactor`, `projected.z`. Không bóc thì một ca kiểm có thể
-/// xanh nhờ chính lời chú thích nói vì sao dòng mã ấy phải có mặt, sau khi dòng
-/// mã ấy đã bị xoá.
+/// nó — `contentScaleFactor`, `projected.z`, `livePoint`. Không bóc thì ca kiểm
+/// xanh nhờ chính lời chú thích, và nó hỏng theo CẢ HAI chiều:
+///
+/// * ca `contains` xanh sau khi dòng mã đã bị xoá, vì lời giải thích còn nằm đó;
+/// * ca `isNot(contains)` ĐỎ dù dòng mã đã bị bỏ đúng như phải thế, vì lời giải
+///   thích *vì sao* nó bị bỏ buộc phải gọi tên nó. Chiều này có thật từ 0.9.1,
+///   khi ca canh phép chia `contentScaleFactor` đổi chiều.
 String _withoutComments(String swift) {
   return swift.replaceAll(RegExp(r'//.*'), '');
 }
