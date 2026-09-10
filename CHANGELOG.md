@@ -1,3 +1,97 @@
+## 0.9.0
+
+**The video format is now chosen by frame rate first**, and among the formats
+tied at the highest rate, by pixel count. An empty list still leaves Apple's
+default alone. This is the second criterion this package has had, and it is the
+reverse of the first.
+
+**Why, and why this is not the revert 0.4.0 asked for.** The order of events
+matters more than the change, because it is easy to misremember in both
+directions:
+
+* **0.4.0** picked the **highest resolution**, ties to the higher frame rate. It
+  labelled itself an unverified experiment and wrote its own revert condition
+  down *before there was any data*: *"If a device run shows the frame rate
+  dropping without the wait shrinking, revert this."*
+* **The device run happened.** iPhone 16 Plus, no LiDAR: the session landed on
+  3840×2160 at 30fps, and the wait for the first point fell from **130 s to
+  7.8 s** (second point 136 s → 17.7 s). The frame rate dropped **and the wait
+  shrank**. The condition was not met. 0.4.1 recorded exactly that, and the
+  experiment stayed.
+* **0.9.0 changes it on a symptom that condition never covered.** With one point
+  down, the **live segment stutters as the phone pans**. That segment is drawn
+  in SceneKit, so the only thing that can make it smooth is frame rate: at 30fps
+  every step it takes is 33 ms wide. Nothing in "frame rate down, wait down"
+  speaks to it.
+
+So this is **not** a revert under the 0.4.0 rule. It is a separate decision on
+new evidence, and the 0.4.0 rule is still unfired.
+
+**A control observation, offered as a fact and not as a clean experiment.** The
+same build on an **iPad Air M3** selected **1920×1440 at 60fps** — that device
+publishes a different format list — and the stutter was not reported there. Two
+devices differ in more than one way; this is a data point, not a comparison.
+
+**What this release does not conclude.** It does not conclude that 4K was
+refuted, or that high resolution is counterproductive. Nobody has measured
+either. The 130 s → 7.8 s fall remains **confounded**: the same build also
+shipped the honest crosshair of 0.4.0, which plausibly accounts for most of that
+fall on its own, and nothing in the data separates the two contributions. 4K@30
+is exactly where 0.4.1 left it — unresolved, neither validated nor refuted. All
+0.9.0 settles is the **order**: when frame rate and pixel count disagree, frame
+rate wins.
+
+**And this release is confounded in the same way, if you let it be.** If the app
+above this package also changes how it draws that segment in the same build,
+then a smoother segment credits nothing in particular, exactly as the crosshair
+and the format change credited nothing in particular last time. Change one
+thing.
+
+**The second tier is load-bearing, not decoration.** Two formats at the same
+rate give SceneKit the same smoothness, so the only thing left to separate them
+is how much image ARKit has to pull feature points out of. Without it, a device
+offering both 1280×720@60 and 1920×1440@60 would run the smaller one and get
+nothing for it.
+
+**The criterion moved out of `ArMeasureSession.swift` into
+`VideoFormatChoice.swift`**, which imports `Foundation` and nothing else — the
+same move `PlaneOvershoot.swift` made in 0.6.0, for the same reason. It compiles
+and runs on macOS, so `test/video_format_choice_test.dart` drives it with
+synthetic format lists and asserts *which* format comes back:
+
+* a list of 4K@30 and 1080p@60 must return the 60 — this case is **red** under
+  the 0.4.0 criterion, which is the point;
+* two formats both at 60 must return the one with more pixels;
+* every case carries **at least two formats**, because a one-format list returns
+  the same answer under either criterion and proves nothing;
+* the pixel tier compares **area**, not width, and a case exists that separates
+  them;
+* an empty list returns `nil`, and full ties resolve to the first entry
+  deterministically.
+
+`ARVideoFormat` cannot be constructed by hand and `supportedVideoFormats` is
+whatever device you are holding, so a criterion written directly against them can
+only be checked by owning the right phone. The contract test keeps the two
+halves tied together: it asserts `makeConfiguration` actually *calls*
+`VideoFormatChoice`, and that no frame-rate or pixel-area comparison has crept
+back inline — a second copy of the criterion would leave the numeric test green
+while guarding a function nobody calls.
+
+**`ArVideoFormat.fps` is still the format's nominal rate, and the gap it hides
+just got wider.** It is read from `config.videoFormat.framesPerSecond` once at
+`run` and never touched again. Before this release the diagnostic strip usually
+said 30; now it will usually say 60, while a heavy scene or a warm device
+delivers less. Nothing in the package notices. **Measuring the delivered rate is
+counting `didUpdate` calls in a sliding window** — a counter and a timestamp,
+nothing more — and until someone does it, every statement about smoothness in
+this file is a report of how it felt.
+
+No wire fields were added, removed or changed. `ArMeasureDiagnostics.video`
+already carried `width`, `height` and `fps`; what changes is which format those
+numbers describe.
+
+Not published to pub.dev, and not yet verified on a device.
+
 ## 0.8.0
 
 **Which plane.** Every hit now carries the identity of the `ARPlaneAnchor` it

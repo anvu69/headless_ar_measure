@@ -24,7 +24,7 @@ No text of ours, no numbers, no buttons, no product vocabulary.
 
 ```yaml
 dependencies:
-  headless_ar_measure: ^0.6.0
+  headless_ar_measure: ^0.9.0
 ```
 
 iOS only. There is no Android implementation, and that is deliberate — this
@@ -351,7 +351,7 @@ field.
 session rather than one tap: the `width`, `height` and `fps` of the ARKit video
 format actually running. It is present **before any point exists**, which is
 when you most need it — that is the moment someone is asking why nothing can be
-placed. See "The video format is an experiment" below.
+placed. See "The video format is chosen, not defaulted" below.
 
 `ArMeasureDiagnostics.features` sits there for the same reason and is present at
 the same moments, but it is an **instrument, not a feature**: `total` counts
@@ -446,36 +446,62 @@ session gives up on relocalization after five seconds by itself, and
 constants — but a number shipped without a tolerance is a promise of precision
 the sensor cannot keep.
 
-### The video format is an experiment
+### The video format is chosen, not defaulted
 
-Since 0.4.0 the session picks the **highest-resolution** entry of
-`ARWorldTrackingConfiguration.supportedVideoFormats` instead of taking Apple's
-default (ties go to the higher frame rate; an empty list leaves the default
-alone). The hypothesis is plain: ARKit pulls feature points out of the camera
-image, so more pixels should mean more points on the poorly textured surfaces
-where planes currently refuse to grow.
+The session does not take Apple's default entry of
+`ARWorldTrackingConfiguration.supportedVideoFormats`. Since 0.9.0 it picks the
+**highest frame rate**, and among the formats tied at that rate, the one with
+the most pixels. An empty list leaves the default alone.
 
-It is a hypothesis, not a promise. The highest-resolution format on some devices
-runs at 30fps where the default runs at 60, and half the frames is half the
-world updates — which could eat the gain, or more. That is why
-`ArMeasureDiagnostics.video` reports `fps` alongside the resolution: show it on
-screen during a device run. **If the frame rate drops and the wait does not,
-this should be reverted.**
+**This is the second criterion, and the first one was the opposite.** 0.4.0
+picked the highest *resolution*, breaking ties on frame rate, on the hypothesis
+that more pixels mean more feature points on the poorly textured surfaces where
+planes refuse to grow. Read the order of events before changing it back, because
+it is easy to misremember in either direction:
 
-It still is a hypothesis after the first device run. The run landed on
-3840×2160 at 30fps and the wait fell from 130 s to 7.8 s, so the revert
-condition above was not met — but the same build also shipped the honest
-crosshair, which plausibly accounts for most of that fall on its own. Nothing
-separates the two. There is also a mechanism pointing the other way: the
-highest-resolution formats are non-binned, giving up the pixel binning that
-suppresses noise in dark areas, and the surface that failed was a *black*
-mousepad. Treat 4K@30 as **unresolved**; a comparison that settles it has to
-change exactly one thing. See the 0.4.1 CHANGELOG entry for the numbers.
+* 0.4.0 wrote its own revert condition down before there was any data: *"If a
+  device run shows the frame rate dropping without the wait shrinking, revert
+  this."* The device run landed on 3840×2160 at 30fps. The frame rate did drop —
+  **and the wait shrank**, from 130 s to 7.8 s for the first point. By the
+  condition written in advance, the experiment was not up for revert, and
+  0.4.1 says so.
+* 0.9.0 changes it anyway, on a symptom that condition did not cover: with a
+  point down, the **live segment stutters as the phone pans**. That segment is
+  drawn in SceneKit, so the only thing that can make it smooth is frame rate —
+  at 30fps every step it takes is 33ms wide.
+* A control observation, offered as a fact and not as a clean experiment: the
+  same build on an iPad Air M3 selected 1920×1440 @ 60fps — a different format
+  list — and the stutter was not reported there. Two different devices differ in
+  more than one way.
+
+**None of this concludes anything about resolution.** Whether 4K helped the
+130 s → 7.8 s fall is still unknown: the same build also shipped the honest
+crosshair, and nothing separates the two contributions. 4K@30 was never
+validated and has not been refuted. What 0.9.0 settles is only the *order*: when
+frame rate and pixel count disagree, frame rate wins.
+
+The second tier is not decoration. Two formats at the same rate give SceneKit
+the same smoothness, so the only thing left to tell them apart is how much image
+ARKit gets to pull feature points from — without that tier, a device offering
+both 1280×720@60 and 1920×1440@60 would run the smaller one for nothing.
+
+The criterion lives in `VideoFormatChoice.swift`, which imports `Foundation` and
+nothing else, so it compiles and runs on macOS and has a numeric test
+(`test/video_format_choice_test.dart`) driving it with synthetic format lists.
+`ARVideoFormat` cannot be constructed by hand and `supportedVideoFormats` is
+whatever device you are holding — a criterion written directly against them can
+only be checked by owning the right phone.
+
+**The same caveat applies to this change as to the last one.** If the app on top
+also changes how it draws the segment in the same build, the two are confounded
+again and neither can be credited. Change one thing.
 
 `fps` here is the format's **nominal** rate — read from
 `config.videoFormat.framesPerSecond` once at `run`, never updated. A session
-throttled down to 20fps still reports 30. Label it as nominal wherever you show
-it, and count frames yourself if you need the delivered rate.
+throttled down to 20fps still reports 30, and after 0.9.0 the gap is *wider*,
+not narrower: the number will usually say 60 now, while a busy scene or a warm
+device delivers less. If you need the delivered rate, count frames yourself —
+this package does not.
 
 ### The lens is not a constant
 
@@ -487,12 +513,13 @@ frame it was read from. Both come off one `ARCamera`, in one statement.
 cannot compute a millimetre of tolerance, and the only thing left is a guess.
 
 **Do not hardcode it.** 1442 — the number every article about iOS devices quotes
-— is the focal length of the 1920×1440 format. This package picks the largest
-format the device supports, so on a real device it is nearly double. It also
-drifts *within* a session, because the package enables autofocus. And the format
-choice itself is still the unresolved experiment described above, whose own
-revert condition is written down one section up: the day someone acts on it,
-`fx` has to move with it.
+— is the focal length of the 1920×1440 format. This package chooses its own
+format, and that choice has already moved once: up to 0.8.0 it took the largest
+format (3840×2160 on the device measured, so `fx` was nearly double), and from
+0.9.0 it prefers frame rate, which on that same device selects something
+smaller. A constant pinned to either release is wrong on the other, and both
+wrong answers land within a few plausible-looking millimetres. `fx` also drifts
+*within* a session, because the package enables autofocus.
 
 That is why `width` and `height` ship in the same block and are **not** borrowed
 from `ArMeasureDiagnostics.video`. That block is a snapshot of the format that

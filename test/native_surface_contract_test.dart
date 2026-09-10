@@ -756,14 +756,22 @@ void main() {
       );
     });
 
-    /// Việc C: chọn khuôn hình phân giải cao nhất máy hỗ trợ.
+    /// Việc C: chọn khuôn hình, theo **nhịp khung trước, điểm ảnh sau**.
     ///
-    /// PHÉP THỬ, chưa nghiệm thu trên máy. Giả thuyết: ảnh phân giải cao hơn
-    /// cho ARKit nhiều điểm đặc trưng hơn, nên mặt phẳng mọc nhanh hơn trên bề
-    /// mặt nghèo vân — đúng cảnh đã làm người dùng chờ 130 giây. Cái giá có thể
-    /// là nhịp khung tụt (4K@30 thay cho 1440p@60), nên nhịp ấy phải in ra
-    /// được ở dải chẩn đoán, và tụt thì bỏ.
-    test('đặt videoFormat tường minh, không lấy mặc định', () {
+    /// Tiêu chí đổi ở 0.9.0. Trước đó (0.4.0) nó xếp ngược lại — nhiều điểm ảnh
+    /// nhất trước — và lượt đổi này **không phải** hoàn nguyên theo điều kiện
+    /// mà 0.4.0 tự ghi trước ("nhịp tụt mà chờ không giảm thì bỏ"): quãng chờ
+    /// ĐÃ co, từ 130 s xuống 7,8 s. Nó đổi vì một triệu chứng mới — đoạn thẳng
+    /// giật khi rê máy, mà đoạn thẳng vẽ trong SceneKit nên nó chỉ mượt được
+    /// bằng nhịp khung.
+    ///
+    /// Ca ở đây KHÔNG kiểm tiêu chí — `test/video_format_choice_test.dart` kiểm
+    /// tiêu chí, bằng cách chạy phép chọn thật trên những danh sách khuôn giả.
+    /// Ca này kiểm đúng một thứ mà ca kiểm số KHÔNG với tới được: rằng cấu hình
+    /// đang chạy CÓ GỌI phép chọn ấy. Chép tiêu chí trở lại vào chỗ này để lại
+    /// một ca kiểm số xanh canh một hàm không ai gọi, và một cái máy chạy tiêu
+    /// chí khác — đúng lớp hỏng câm mà cả tệp này sinh ra để chặn.
+    test('đặt videoFormat tường minh, và đi qua VideoFormatChoice', () {
       final body = _withoutComments(
         _swiftMethodBody(sessionSource, 'private func makeConfiguration('),
       );
@@ -774,7 +782,8 @@ void main() {
         reason:
             'Không đặt gì là lấy khuôn mặc định của Apple, và mặc định ấy chọn '
             'theo cân bằng chung chứ không theo cái việc gói này làm — rút điểm '
-            'đặc trưng từ một bề mặt nghèo vân ở cự ly 0,3–3 m.',
+            'đặc trưng từ một bề mặt nghèo vân ở cự ly 0,3–3 m, và vẽ một đoạn '
+            'thẳng chạy theo tâm ngắm.',
       );
       expect(
         body,
@@ -783,11 +792,48 @@ void main() {
       );
       expect(
         body,
-        contains('.max(by:'),
+        contains('VideoFormatChoice.indexOfBest('),
         reason:
-            'Danh sách RỖNG là một khả năng thật (máy ảo, một bản iOS sau). '
-            '`max(by:)` trả `nil` ở đó và `if let` bỏ qua — phòng hờ nằm ngay '
-            'trong phép chọn, không phải một nhánh riêng ai đó quên.',
+            'Tiêu chí phải nằm ở `VideoFormatChoice` — tệp ấy không nhập ARKit '
+            'nên nó CHẠY được trong ca kiểm. Một tiêu chí viết thẳng ở đây chỉ '
+            'kiểm được bằng cách cầm đúng cái máy có đúng danh sách khuôn cần '
+            'thử, tức là không kiểm được.',
+      );
+      expect(
+        body,
+        isNot(contains('framesPerSecond <')),
+        reason:
+            'So nhịp khung TẠI ĐÂY là chép tiêu chí ra chỗ thứ hai. Hai bản '
+            'chép lệch nhau thì bản chạy trên máy là bản này, còn bản có ca '
+            'kiểm là bản kia — và không có gì đỏ.',
+      );
+      expect(
+        body,
+        isNot(contains('imageResolution.width * ')),
+        reason:
+            'Cùng lẽ: nhân ra diện tích ở đây nghĩa là tiêu chí đã quay về nằm '
+            'trong `makeConfiguration`.',
+      );
+    });
+
+    test('VideoFormatChoice KHÔNG nhập ARKit', () {
+      final choiceSource = File(
+        'ios/headless_ar_measure/Sources/headless_ar_measure/VideoFormatChoice.swift',
+      ).readAsStringSync();
+
+      expect(
+        choiceSource,
+        isNot(contains('import ARKit')),
+        reason:
+            'Nhập ARKit là tệp này thôi dịch được trên macOS, và ca kiểm số của '
+            'nó chết theo — im lặng chuyển thành "bỏ qua" nếu ai đó thêm một '
+            'nhánh phòng hờ, hoặc đỏ với một lỗi trông như lỗi môi trường. Cả '
+            'hai đều kết thúc bằng việc gỡ ca kiểm ra.',
+      );
+      expect(
+        choiceSource,
+        isNot(contains('import UIKit')),
+        reason: 'Cùng lẽ với ARKit.',
       );
     });
 

@@ -1041,34 +1041,49 @@ final class ArMeasureSession: NSObject {
       config.sceneReconstruction = .mesh
     }
 
-    // PHÉP THỬ, chưa nghiệm thu trên máy — xem CHANGELOG 0.4.0.
+    // Chọn khuôn hình: **nhịp khung cao nhất trước, rồi mới tới điểm ảnh.**
+    // Tiêu chí nằm ở `VideoFormatChoice`, không nằm ở đây — xem CHANGELOG
+    // 0.9.0 cho lý lẽ, và 0.4.0 với 0.4.1 cho tiêu chí trước nó.
     //
-    // Giả thuyết: ARKit rút điểm đặc trưng từ ẢNH camera, nên một khuôn hình
-    // phân giải cao hơn cho nhiều điểm hơn trên cùng một cảnh, và mặt phẳng mọc
-    // nhanh hơn ở đúng chỗ nó đang không mọc — bề mặt tối, trơn, không vân.
-    // Bản trước không đặt gì và lấy khuôn mặc định của Apple; mặc định ấy cân
-    // bằng cho mọi app AR, không cân bằng cho việc chấm một điểm lên mép bàn.
+    // Ba câu đủ để không ai đọc nhầm lịch sử này theo bất kỳ chiều nào:
     //
-    // Cái giá có thể có, và nó là lý do `fps` phải đi lên chẩn đoán: khuôn phân
-    // giải cao nhất trên một số máy chạy 30 khung/s thay vì 60. Nửa số khung là
-    // nửa số lượt ARKit cập nhật thế giới, và điều đó có thể ăn hết phần vừa
-    // được — hoặc hơn. Số đo được trên máy thật quyết định giữ hay bỏ; **nhịp
-    // khung tụt mà thời gian chờ không giảm thì bỏ hẳn đoạn này.**
+    // * 0.4.0 chọn khuôn NHIỀU ĐIỂM ẢNH NHẤT, dán nhãn phép thử chưa nghiệm
+    //   thu, và tự ghi trước điều kiện hoàn nguyên: *nhịp khung tụt mà thời
+    //   gian chờ không giảm thì bỏ*. Lượt máy thật: nhịp tụt còn 30, **nhưng
+    //   quãng chờ co từ 130 s xuống 7,8 s**. Điều kiện KHÔNG đạt.
+    // * Nên lượt này **không phải** hoàn nguyên theo tiêu chí ấy. Nó đổi vì một
+    //   triệu chứng MỚI mà tiêu chí ấy không nói tới: đoạn thẳng **giật khi rê
+    //   máy**. Đoạn thẳng vẽ trong SceneKit, nên nó chỉ mượt được bằng nhịp
+    //   khung — 30 khung/s là 33 ms mỗi bước nhảy.
+    // * Và đây KHÔNG phải một kết luận về phân giải. Không ai đo được rằng phân
+    //   giải cao phản tác dụng; phép thử 0.4.0 vẫn lẫn biến với lượt sửa tâm
+    //   ngắm đi cùng bản dựng. Lượt này chỉ xếp lại thứ tự khi hai thứ cãi nhau.
     //
-    // `max(by:)` trên danh sách RỖNG trả `nil`, và `if let` bỏ qua — máy ảo hay
-    // một bản iOS sau không khai khuôn nào thì cấu hình giữ nguyên mặc định.
-    // Phòng hờ nằm trong chính phép chọn, không phải một nhánh riêng ai đó quên.
+    // Phép chọn nằm ở một tệp KHÔNG nhập ARKit vì `ARVideoFormat` không dựng
+    // được bằng tay và `supportedVideoFormats` là danh sách của cái máy đang
+    // chạy — tiêu chí viết thẳng trên nó chỉ kiểm được bằng cách cầm đúng máy
+    // có đúng danh sách cần thử. Rút ba con số ra là thứ cho nó một ca kiểm
+    // SỐ (`test/video_format_choice_test.dart`), và một ca kiểm đọc-chữ không
+    // phân biệt nổi hai tiêu chí này: cùng tên hàm, cùng danh sách vào, và cả
+    // hai đều trả về một khuôn có thật của máy.
+    //
+    // Danh sách RỖNG trả `nil` và `if let` bỏ qua — máy ảo hay một bản iOS sau
+    // không khai khuôn nào thì cấu hình giữ nguyên mặc định. Phòng hờ nằm trong
+    // chính phép chọn, không phải một nhánh riêng ai đó quên.
+    //
+    // Chọn ra CHỈ SỐ rồi mới lấy `formats[best]`: tra ngược từ ba con số là mở
+    // chỗ cho một lỗi câm, vì hai mục cùng bề ngang, bề cao và nhịp vẫn có thể
+    // là hai `ARVideoFormat` khác nhau.
     let formats = ARWorldTrackingConfiguration.supportedVideoFormats
-    if let best = formats.max(by: { lhs, rhs in
-      let lhsPixels = lhs.imageResolution.width * lhs.imageResolution.height
-      let rhsPixels = rhs.imageResolution.width * rhs.imageResolution.height
-      // Bằng điểm ảnh thì lấy khuôn NHANH hơn: hai khuôn cùng phân giải cho
-      // ARKit cùng lượng thông tin mỗi ảnh, nên thứ còn lại phân biệt chúng là
-      // số ảnh mỗi giây.
-      if lhsPixels == rhsPixels { return lhs.framesPerSecond < rhs.framesPerSecond }
-      return lhsPixels < rhsPixels
-    }) {
-      config.videoFormat = best
+    if let best = VideoFormatChoice.indexOfBest(
+      among: formats.map {
+        VideoFormatCandidate(
+          width: Int($0.imageResolution.width),
+          height: Int($0.imageResolution.height),
+          fps: $0.framesPerSecond)
+      })
+    {
+      config.videoFormat = formats[best]
     }
 
     // Có hai cờ nữa trông như "bật cho AR chạy tốt hơn", và cả hai CỐ Ý không

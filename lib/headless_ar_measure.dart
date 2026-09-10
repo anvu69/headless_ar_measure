@@ -257,15 +257,21 @@ class ArPointDiagnostics {
 
 /// Khuôn hình ARKit đang CHẠY — chuyện của cả phiên, không phải của một điểm.
 ///
-/// Có mặt vì một PHÉP THỬ: gói chọn khuôn phân giải cao nhất máy hỗ trợ, với
-/// giả thuyết rằng nhiều điểm ảnh cho ARKit nhiều điểm đặc trưng hơn trên bề
-/// mặt nghèo vân. Ba con số dưới đây là thứ duy nhất nói được phép thử ấy có
-/// tác dụng gì trên một máy thật — nhất là [fps], vì khuôn phân giải cao nhất
-/// trên một số máy chạy 30 khung/s thay cho 60, và nửa số khung có thể ăn hết
-/// phần vừa được.
+/// Gói **không** lấy khuôn mặc định của Apple: nó chọn khuôn có **nhịp khung
+/// cao nhất**, và trong số các khuôn cùng nhịp cao nhất thì lấy khuôn nhiều
+/// điểm ảnh nhất. Danh sách rỗng thì giữ mặc định.
+///
+/// Thứ tự ấy đổi ở `0.9.0`. Trước đó (`0.4.0`) nó xếp ngược: nhiều điểm ảnh
+/// nhất trước. Ba con số dưới đây là thứ duy nhất nói được phép chọn ấy đang
+/// làm gì trên một máy thật, và chúng ở đây từ trước khi ai đó phải trả lời
+/// câu hỏi ấy lần đầu.
+///
+/// **[fps] là nhịp DANH ĐỊNH của khuôn.** Sau `0.9.0` con số ấy thường là 60,
+/// và một cái máy đang nóng vẫn giao ít hơn thế mà không có gì ở đây nói ra.
+/// Đọc lời chú của [fps].
 ///
 /// **Mọi trường có thể `null`**, cùng lối với [ArPointDiagnostics]: một bản
-/// Swift cũ hơn phép thử này không gửi gì cả.
+/// Swift cũ hơn khối này không gửi gì cả.
 class ArVideoFormat {
   const ArVideoFormat({this.width, this.height, this.fps});
 
@@ -281,6 +287,12 @@ class ArVideoFormat {
   /// tại lời gọi `run`, rồi để im. Một phiên tụt xuống 20 khung/s vì nóng máy
   /// vẫn báo 30. Chỗ hiển thị phải ghi rõ "danh định"; ai cần nhịp THẬT thì
   /// phải tự đếm khung — gói không đếm.
+  ///
+  /// Khoảng cách giữa hai thứ ấy **rộng ra** từ `0.9.0`, không hẹp lại. Phép
+  /// chọn nay ưu tiên nhịp, nên con số này thường là 60 — và một cái máy nóng
+  /// giao 40 vẫn khai 60. Trước đó nó thường là 30, và một khai báo 30 sai ít
+  /// hơn vì trần của nó thấp hơn. Ai định kết luận điều gì về độ mượt từ con
+  /// số này phải đếm khung trước.
   final int? fps;
 }
 
@@ -316,10 +328,13 @@ class ArCameraIntrinsics {
   /// `ARFrame.camera.intrinsics[0][0]`.
   ///
   /// **Đừng ghim cứng con số này.** 1442 — giá trị mà mọi bài viết về máy iOS
-  /// dẫn ra — là tiêu cự của khuôn 1920×1440. Gói chọn khuôn to nhất máy hỗ
-  /// trợ, nên trên máy thật nó gần gấp đôi; và khối chọn khuôn hình ấy còn là
-  /// một phép thử chưa nghiệm thu, tức là con số có thể đổi ở bản sau. Nó cũng
-  /// nhúc nhích trong một phiên, vì gói bật lấy nét tự động.
+  /// dẫn ra — là tiêu cự của khuôn 1920×1440. Gói tự chọn khuôn hình, và tiêu
+  /// chí chọn ĐÃ đổi một lần: tới `0.8.0` nó lấy khuôn to nhất (3840×2160 trên
+  /// máy đã đo, tức [fx] gần gấp đôi), từ `0.9.0` nó ưu tiên nhịp khung và trên
+  /// cùng máy ấy khuôn được chọn nhỏ hơn. Một hằng số ghim theo bản nào cũng
+  /// sai ở bản kia, và cả hai giá trị sai đều rơi vào khoảng vài milimét —
+  /// trông hoàn toàn hợp lý. Nó còn nhúc nhích trong một phiên, vì gói bật lấy
+  /// nét tự động.
   ///
   /// Luôn đọc kèm [width]: cùng một thấu kính cho hai con số khác nhau trên hai
   /// khuôn hình, và tỉ lệ giữa chúng đúng bằng tỉ lệ bề rộng.
