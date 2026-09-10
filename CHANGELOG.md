@@ -1,3 +1,179 @@
+## 0.10.0
+
+One new command: `movePoint(index)` moves an already-placed endpoint to
+wherever the centre ray is hitting now.
+
+### The number moved and the picture did not
+
+From a real device, with two points down:
+
+> when the two ends are chosen a plus/minus button appears, but it **confuses
+> the user to change the number while the point on screen does not move**
+
+Two problems are folded into that sentence, and the first is the heavier one: a
+control that edits the **number** while the **drawing** stands still is two
+statements about one segment, on one screen, disagreeing. That is the exact
+failure class this package spends its whole surface area blocking everywhere
+else — a value that looks fine and is not backed by the thing it claims to
+describe.
+
+The fix is not a better nudge button. It is to let the user move the point, so
+the number changes **because the picture changed**.
+
+```dart
+switch (await controller.movePoint(1)) {
+  case ArMeasureMoveResult.moved:        // haptic; the number is already new
+  case ArMeasureMoveResult.missed:       // "move around until it locks" — the old point is intact
+  case ArMeasureMoveResult.noSuchPoint:  // a bug, or a race with undoPoint()
+  case ArMeasureMoveResult.notReady:     // the status already says why
+}
+```
+
+`ArMeasureMoveResult` is deliberately shaped like `ArMeasurePlaceResult`: three
+of its four values mean "nothing moved", and the three sentences you would say
+to a user about them contradict each other. A `bool` would collapse all three
+into one, and be wrong two-thirds of the time.
+
+### Which indices are valid
+
+**An index must name a point that exists** — `0` with one point down, `0` and
+`1` with two, nothing at all before the first tap. Anything else returns
+`noSuchPoint`.
+
+Not "there must be two points". The package does not know when your app offers
+the control, and a placed point is a placed point even while the other end is
+still chasing the crosshair. Making "moving is only for the finished state" a
+rule here would be the package inventing product policy, which is the same line
+it already refuses to cross for `overshootMm` and `planeId`.
+
+`noSuchPoint` is checked **before** the tracking state, for the same reason
+`alreadyComplete` is checked before `notReady` in `placePoint()`: "that point
+does not exist" is a statement about your data and it is true whether ARKit is
+solid or shaking. Reversed, half a second of hand tremor turns it into "wait for
+tracking to recover", and the caller waits for something that will never arrive
+— no amount of waiting makes point 5 appear.
+
+`noSuchPoint` is never the guard value for a channel that cannot answer. A dead
+channel knows nothing about how many points you have; answering on its behalf
+would be lying to the app about the app's own data, and an app that believes it
+would hide the move control permanently for a point it is currently drawing.
+Missing plugin, disposed view, a native build older than this command, a
+malformed `index` on the wire: all of those are `notReady`.
+
+### A miss leaves the old point alone
+
+The raycast guard sits ahead of every mutation, and that ordering is contract.
+
+Writing it the other way round — pull the old point out, then place a new one —
+reads perfectly naturally and works on every frame where the ray hits. It fails
+only on a miss, which is precisely when the user is aiming at a difficult
+surface, which is precisely when they needed this command. They would lose an
+endpoint they had placed correctly, in exchange for an operation that did not
+happen, while trying to nudge it a few millimetres.
+
+A failed move is a no-op. `test/native_surface_contract_test.dart` pins the
+ordering rather than the sentiment.
+
+### The provenance is the new tap's, whole
+
+The moved point reports the tier, overshoot, plane identity, grazing angle,
+camera distance and tracking snapshot of **this** move, measured at the tap.
+None of the previous tap survives: the old diagnostics entry is dropped and a
+fresh `makeDiagnostics(for:)` runs on the new hit.
+
+This is the easiest thing to miss and the most expensive to miss. A point that
+moves onto a different plane while still reporting the old plane's identity
+makes `planeId`, `overshootMm`, `rayAngleDeg` and the extrapolated-endpoint ring
+all lie about it — in numbers that look entirely valid. The two device failures
+that made `planeId` exist in 0.8.0 would come straight back, this time through a
+command that is supposed to fix a point rather than break one.
+
+`ARAnchor.transform` is read-only, so the move is a new anchor: the old one is
+removed from the session and the new one added, with the `anchors` array
+rewritten first so the resulting `didRemove` callback finds nothing to delete.
+
+The contract test that used to pin "diagnostics are written exactly **once**, at
+the tap" now pins two write sites — `placePoint` and `movePoint` — plus a
+stronger property: every write must be a fresh `makeDiagnostics(for:)` call,
+never a copy of an existing entry. Copying is the natural-looking mistake here
+("keep the provenance so it isn't lost"), and it is exactly the bug.
+
+The measurement is recomputed immediately, through `publish(force: true)`, and
+it keeps drifting like any other measurement until the app settles it.
+
+### The moved point does not go through the live-endpoint filter
+
+`LivePointFilter` (0.9.1) exists for an endpoint redrawn sixty times a second.
+A moved point is placed once per tap, exactly like `placePoint()`, and three
+things follow:
+
+* The filter costs **latency** — 10.8 mm while panning at 0.48 m/s, a number
+  its own tests pin. That is a systematic error, and it has no business inside a
+  point the user considers settled.
+* Its 100 ms **hold** would be worse than the latency: a missing ray would
+  return the held coordinate, and the call would report `moved` for a move that
+  never happened.
+* `placePoint()` already refuses the filter for these reasons, and having the
+  two placement paths disagree about it would be a difference nobody could see.
+
+### The crosshair had to stay awake at `measured`
+
+This is a reversal of something that was written down, and it is worth naming.
+
+Through 0.9.1 the aim probe — `aimLocked`, `aimTarget`, `aimOvershootMm`,
+`aimRayAngleDeg`, `aimPlaneId`, and the feature census beside them — was gated
+to `ready` and `firstPointPlaced`, with the reasoning stated in the field's own
+docs: once both points are down there is nothing left to aim at.
+
+`movePoint()` kills that premise. At `measured` there is still a tap that places
+a point. Leaving the crosshair mute there would mean the **first** time a user
+learns they are aiming at nothing is when they press the button and nothing
+moves — the dead-button bug that `aimLocked` was built to prevent, rebuilt
+through the back door, in the middle of a feature whose whole purpose is to stop
+a control from lying.
+
+So the gate is now one function, `reticleIsMeaningful(_:)`, used in five places
+(the probe, both guards at the end of `publish`, `placePoint`, `movePoint`), and
+it admits `ready`, `firstPointPlaced` and `measured` — which is exactly ARKit's
+`.normal` tracking branch. The honest phrasing of the rule turns out to be
+simpler than the old one: **a ray only means anything while tracking is
+normal.**
+
+`placePoint()` is unchanged in behaviour by this: its `anchors.count < 2` guard
+already returns `alreadyComplete` before the status check can ever see
+`measured`. It uses the shared function so there is no fourth hand-written copy
+of the rule.
+
+**The cost, stated plainly.** At `measured` the status channel is no longer
+quiet. The probe runs at 10Hz and `featureCensus` changes on nearly every
+sample, so a session parked on a finished measurement now emits up to ten
+samples a second instead of almost none. The ceiling is the old ceiling
+(`aimProbeIntervalSeconds`); what changed is the floor, in a state apps sit in
+for a long time. That is the price of the crosshair being able to speak during
+the one activity that needs it.
+
+### No new field for "which endpoint is being aimed at"
+
+It was considered and rejected. `ArMeasure.overlay` already gives both endpoints
+in screen points, and the crosshair sits at the centre of the `ArMeasureView`
+the app laid out, so the app can measure both screen distances with a
+subtraction.
+
+Adding the field would put a second source of truth about screen geometry in the
+package — some layouts push the crosshair above a bottom sheet, and the package
+would be answering about a crosshair that is not where it thinks — and it would
+force the package to pick a proximity threshold, which depends on finger size,
+screen size and where the buttons are. That is the "snap" concept, and it stays
+in the app. A `null` endpoint leaves no hole in the comparison: a point with no
+screen coordinate cannot be the one near the crosshair.
+
+### Not verified on a device
+
+Everything above is `flutter test` and `swiftc -typecheck`. The command has not
+been driven by a hand holding an iPad: the `measured` sample rate, and whether
+the crosshair reads well while adjusting an endpoint, are both claims waiting on
+a real session.
+
 ## 0.9.1
 
 Two fixes. Both are for things you can only see on a device, and both had

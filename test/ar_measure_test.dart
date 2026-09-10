@@ -1133,6 +1133,98 @@ void main() {
       );
     });
 
+    /// Dời một đầu mút SANG MỘT MẶT PHẲNG KHÁC, đọc trên dây.
+    ///
+    /// Cảnh dời trong CÙNG một mặt phẳng không phân biệt được hai cách cài —
+    /// giữ lai lịch cũ và ghi lai lịch mới cho ra cùng một khối chẩn đoán — nên
+    /// nó là một ca mù. Cảnh dưới đây đổi cả ba thứ cùng lúc: định danh mặt
+    /// phẳng, TẦNG tia, và cái van đi kèm tầng ấy.
+    test('điểm vừa dời khai lai lịch MỚI, và điểm kia không đổi gì', () {
+      const banGoc = 'B3F1C0DE-4A2E-4C1B-9E77-0000000000A1';
+      const tuong = 'B3F1C0DE-4A2E-4C1B-9E77-0000000000B2';
+
+      Map<Object?, Object?> mau(Map<Object?, Object?> diemDuoc) => {
+        'status': 'measured',
+        'mm': 812.0,
+        'tolMm': 12.0,
+        'diagnostics': {
+          'points': [
+            {
+              'target': 'existingPlaneGeometry',
+              'tracking': 'normal',
+              'sessionAgeMs': 4210,
+              'cameraDistanceMm': 612.5,
+              'rayAngleDeg': 63.25,
+              'planeId': banGoc,
+              'planeAlignment': 'horizontal',
+            },
+            diemDuoc,
+          ],
+        },
+      };
+
+      final truocDoi = ArMeasure.parseSample(
+        mau({
+          'target': 'existingPlaneGeometry',
+          'tracking': 'normal',
+          'sessionAgeMs': 4380,
+          'cameraDistanceMm': 640.0,
+          'rayAngleDeg': 58.0,
+          'planeId': banGoc,
+          'planeAlignment': 'horizontal',
+        }),
+      );
+      final sauDoi = ArMeasure.parseSample(
+        mau({
+          'target': 'existingPlaneInfinite',
+          'tracking': 'limitedExcessiveMotion',
+          'sessionAgeMs': 9120,
+          'cameraDistanceMm': 1810.0,
+          'rayAngleDeg': 11.5,
+          'planeId': tuong,
+          'planeAlignment': 'vertical',
+          'overshootMm': 1946.0,
+        }),
+      );
+
+      final cu = truocDoi?.diagnostics?.points[1];
+      final moi = sauDoi?.diagnostics?.points[1];
+
+      // MỌI trường của điểm đã dời là của lần dời MỚI. Một cách cài giữ khối cũ
+      // rồi vá vài trường lên trên cho ra đúng một điểm mang tầng mới với định
+      // danh cũ — và lúc ấy mọi tín hiệu trung thực của gói đều nói dối về đúng
+      // cái điểm vừa đổi chỗ.
+      expect(moi?.target, ArRaycastTarget.existingPlaneInfinite);
+      expect(moi?.planeId, tuong);
+      expect(moi?.planeAlignment, ArPlaneAlignment.vertical);
+      expect(moi?.tracking, ArTrackingSnapshot.limitedExcessiveMotion);
+      expect(moi?.sessionAgeMs, 9120);
+      expect(moi?.cameraDistanceMm, 1810.0);
+      expect(moi?.rayAngleDeg, 11.5);
+
+      // Bất biến của van đi theo lai lịch mới, không đi theo lai lịch cũ: điểm
+      // cũ ở tầng hình học nên KHÔNG có van, điểm mới ở tầng ngoại suy nên PHẢI
+      // có. Đây là chỗ một khối chẩn đoán vá nửa vời lộ ra.
+      expect(cu?.overshootMm, isNull);
+      expect(moi?.overshootMm, 1946.0);
+      expect(
+        moi?.overshootMm != null,
+        moi?.target == ArRaycastTarget.existingPlaneInfinite,
+      );
+
+      // Đầu KHÔNG bị dời không nhúc nhích. Một cách cài dựng lại cả hai khối
+      // chẩn đoán bằng một tia mới sẽ đổi luôn điểm này — và nó đổi sang lai
+      // lịch của một cú bấm chưa từng xảy ra.
+      expect(
+        sauDoi?.diagnostics?.points[0].planeId,
+        truocDoi?.diagnostics?.points[0].planeId,
+      );
+      expect(
+        sauDoi?.diagnostics?.points[0].sessionAgeMs,
+        truocDoi?.diagnostics?.points[0].sessionAgeMs,
+      );
+    });
+
     test('planeId của điểm sai kiểu hay rỗng về null, không ném', () {
       late ArMeasureSample? s;
       expect(() {
@@ -1370,13 +1462,14 @@ void main() {
           );
     });
 
-    // Bảy lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
+    // Tám lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
     // không tra được view nào trong sổ đăng ký, và lệnh rơi vào chỗ trống mà
     // không có gì nổ — đúng dạng lỗi câm mà ca kiểm này tồn tại để chặn.
     test('mọi lệnh gửi đúng tên và kèm viewId', () async {
       const c = ArMeasureController(7);
 
       await c.placePoint();
+      await c.movePoint(1);
       await c.undoPoint();
       await c.reset();
       await c.pause();
@@ -1386,6 +1479,7 @@ void main() {
 
       expect(calls.map((c) => c.method), [
         'placePoint',
+        'movePoint',
         'undoPoint',
         'reset',
         'pause',
@@ -1394,8 +1488,16 @@ void main() {
         'dispose',
       ]);
       for (final call in calls) {
-        expect(call.arguments, {'viewId': 7});
+        expect((call.arguments as Map)['viewId'], 7);
       }
+      // `movePoint` là lệnh DUY NHẤT mang thêm một tham số, và tham số ấy là
+      // toàn bộ nội dung của nó: một lệnh dời không nói dời đầu nào thì tầng
+      // Swift phải đoán, và đoán sai là dời nhầm đầu — một điểm nhảy chỗ, một
+      // con số mới, và không có gì nổ.
+      expect(
+        calls.firstWhere((c) => c.method == 'movePoint').arguments,
+        {'viewId': 7, 'index': 1},
+      );
     });
 
     // Bốn kết quả, và ba trong bốn là "không có điểm nào đặt" vì ba lý do KHÁC
@@ -1451,6 +1553,83 @@ void main() {
         await place((_) async => throw PlatformException(code: 'boom')),
         ArMeasurePlaceResult.notReady,
       );
+    });
+
+    // Bốn kết quả, cùng một lối với `placePoint`: ba trong bốn là "không có gì
+    // dời đi đâu cả" vì ba lý do KHÁC NHAU, và ba câu nói với người dùng cũng
+    // khác nhau — rê máy tìm bề mặt, chờ phiên bám lại, hay không nói gì cả vì
+    // chính app vừa hỏi về một điểm không tồn tại.
+    test('movePoint đọc được cả bốn kết quả tầng nền nói', () async {
+      Future<ArMeasureMoveResult> move(Object? reply) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              (call) async => reply,
+            );
+        return const ArMeasureController(1).movePoint(0);
+      }
+
+      expect(await move('moved'), ArMeasureMoveResult.moved);
+      expect(await move('missed'), ArMeasureMoveResult.missed);
+      expect(await move('notReady'), ArMeasureMoveResult.notReady);
+      expect(await move('noSuchPoint'), ArMeasureMoveResult.noSuchPoint);
+    });
+
+    // Giá trị canh gác là `notReady`, KHÔNG phải `noSuchPoint`. Một kênh câm
+    // không biết gì về việc app đang có mấy điểm, nên trả `noSuchPoint` ở đó là
+    // nói dối app VỀ DỮ LIỆU CỦA CHÍNH NÓ — và app tin lời ấy sẽ giấu luôn cái
+    // nút dời, vĩnh viễn, vì một điểm nó đang vẽ trên màn.
+    test('movePoint không đọc được thì về notReady, không ném', () async {
+      Future<ArMeasureMoveResult> move(
+        Future<Object?> Function(MethodCall) handler,
+      ) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              handler,
+            );
+        return const ArMeasureController(1).movePoint(0);
+      }
+
+      expect(await move((_) async => null), ArMeasureMoveResult.notReady);
+      expect(await move((_) async => 'sao chổi'), ArMeasureMoveResult.notReady);
+      expect(await move((_) async => true), ArMeasureMoveResult.notReady);
+      // Một bản Swift cũ hơn lệnh này trả `FlutterMethodNotImplemented`, và nó
+      // tới Dart dưới dạng `MissingPluginException`.
+      expect(
+        await move((_) async => throw MissingPluginException()),
+        ArMeasureMoveResult.notReady,
+      );
+      expect(
+        await move((_) async => throw PlatformException(code: 'boom')),
+        ArMeasureMoveResult.notReady,
+      );
+    });
+
+    // Luật "chỉ số nào hợp lệ" nằm ở ĐÚNG MỘT chỗ, và chỗ ấy là tầng Swift —
+    // nơi duy nhất biết đang có mấy điểm. Dart chặn thêm một lượt ở đây là dựng
+    // một bản chép của luật ấy, và bản chép lệch ngay lượt đầu ai đó đổi số
+    // điểm tối đa: Dart trả `noSuchPoint` cho một chỉ số mà Swift chấp nhận, và
+    // lệnh không bao giờ rời máy.
+    test('movePoint KHÔNG tự quyết chỉ số nào hợp lệ', () async {
+      final sent = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel(ArMeasure.methodChannelName),
+            (call) async {
+              sent.add(call);
+              return 'noSuchPoint';
+            },
+          );
+
+      const c = ArMeasureController(3);
+      expect(await c.movePoint(-1), ArMeasureMoveResult.noSuchPoint);
+      expect(await c.movePoint(99), ArMeasureMoveResult.noSuchPoint);
+
+      expect(sent.map((c) => c.arguments), [
+        {'viewId': 3, 'index': -1},
+        {'viewId': 3, 'index': 99},
+      ]);
     });
 
     // `captureFrame` là lệnh DUY NHẤT trả về một tài nguyên (một tệp trên

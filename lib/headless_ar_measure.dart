@@ -62,9 +62,68 @@ enum ArMeasurePlaceResult {
 
   /// Đã đủ hai điểm rồi.
   ///
-  /// Câu đúng: **đã đủ hai điểm, bấm Chốt hoặc Hoàn tác**. Giá trị này đi trước
-  /// [notReady]: hai điểm đã nằm đó thì câu ấy đúng kể cả lúc ARKit đang rung.
+  /// Câu đúng: **đã đủ hai điểm, bấm Chốt, Hoàn tác, hoặc dời một đầu**. Giá
+  /// trị này đi trước [notReady]: hai điểm đã nằm đó thì câu ấy đúng kể cả lúc
+  /// ARKit đang rung.
+  ///
+  /// Từ `0.10.0` đây không còn là ngõ cụt: [ArMeasureController.movePoint] đặt
+  /// lại một đầu mút đã chấm mà không bắt đo lại cả hai.
   alreadyComplete,
+}
+
+/// Chuyện gì đã xảy ra với một lời gọi [ArMeasureController.movePoint].
+///
+/// Cùng một họ với [ArMeasurePlaceResult], và cùng một lẽ: ba trong bốn giá trị
+/// đều là "không có điểm nào đổi chỗ", và ba câu đi kèm chúng **ngược nhau**.
+///
+/// Vì sao lệnh này tồn tại, nguyên văn lượt máy thật: *"khi chọn xong 2 đầu thì
+/// hiện ra nút cộng trừ, tuy nhiên nó gây confuse cho user khi thay đổi số mà
+/// điểm trên màn hình không đổi"*. Một cái nút chỉnh CON SỐ trong khi HÌNH đứng
+/// im là hai lời khai về cùng một đoạn thẳng trên cùng một màn. Lệnh này đổi
+/// chiều nhân quả: người dùng dời cái điểm, và con số đổi **vì hình đổi**.
+enum ArMeasureMoveResult {
+  /// Điểm đã đổi chỗ, và số đo đã tính lại.
+  moved,
+
+  /// Tia bắn ra không trúng gì. **Điểm cũ còn nguyên.**
+  ///
+  /// Câu đúng: **rê máy chậm cho tới khi tâm ngắm khoá lại rồi bấm lại**. Giữ
+  /// điểm cũ là hợp đồng, không phải một chi tiết cài đặt: một lượt dời hụt xoá
+  /// mất đầu mút đang có là phá dữ liệu của người dùng để đổi lấy một thao tác
+  /// KHÔNG xảy ra — và họ vừa định nhích nó đi vài milimét.
+  ///
+  /// Kèm [ArMeasureSample.aimLocked], đây là đường để một cú bấm trượt không
+  /// trông giống một cái nút hỏng. Đừng để nó là chỗ ĐẦU TIÊN người dùng biết
+  /// mình đang ngắm vào chỗ trống.
+  missed,
+
+  /// Phiên đang ở trạng thái không cho bắn tia.
+  ///
+  /// Câu đúng nằm ở chính [ArMeasureSample.status] đang bắn ra. Tia chỉ có
+  /// nghĩa khi ARKit đang bám bình thường — tức [ArMeasureStatus.ready],
+  /// [ArMeasureStatus.firstPointPlaced] hoặc [ArMeasureStatus.measured].
+  ///
+  /// Cũng là giá trị trả về khi kênh không nói được gì: thiếu plugin, view đã
+  /// chết, hoặc một bản Swift **cũ hơn lệnh này**. Không phải [noSuchPoint] —
+  /// một kênh câm không biết gì về việc app đang có mấy điểm, và trả lời thay
+  /// nó là nói dối app về dữ liệu của chính app.
+  notReady,
+
+  /// Chỉ số không trỏ vào điểm nào đang có.
+  ///
+  /// Hợp lệ là `0 <= index < số điểm đã chấm`: một điểm, chỉ số 0; hai điểm,
+  /// chỉ số 0 và 1; chưa chấm gì thì không chỉ số nào hợp lệ.
+  ///
+  /// **Không có câu nào để nói với người dùng.** Đây là một câu nói với app:
+  /// nó vừa hỏi về một điểm không tồn tại, nên cái nút dời ấy lẽ ra không nên
+  /// có mặt. Nó cũng là đường của một cuộc chạy đua bình thường — người dùng
+  /// bấm dời đúng lúc [ArMeasureController.undoPoint] vừa chạy — và ở đó việc
+  /// đúng là không làm gì cả.
+  ///
+  /// Giá trị này đi TRƯỚC [notReady]: nửa giây rung tay không được biến "điểm
+  /// ấy không tồn tại" thành "chờ phiên bám lại", vì chờ bao lâu cũng không làm
+  /// nó mọc ra.
+  noSuchPoint,
 }
 
 /// Một số đo khoảng cách.
@@ -488,10 +547,18 @@ class ArMeasureSample {
   /// Dùng nó để đổi hình tâm ngắm, y như app Measure của Apple: người ta rê
   /// máy tới khi con trỏ khoá lại rồi mới bấm.
   ///
-  /// Chỉ có nghĩa khi [status] là [ArMeasureStatus.ready] hoặc
-  /// [ArMeasureStatus.firstPointPlaced]. Ở mọi trạng thái khác — kể cả
-  /// [ArMeasureStatus.measured], lúc đã đủ hai điểm và không còn gì để chấm —
-  /// nó luôn `false`.
+  /// Có nghĩa ở **ba** trạng thái — [ArMeasureStatus.ready],
+  /// [ArMeasureStatus.firstPointPlaced] và [ArMeasureStatus.measured] — tức là
+  /// đúng những lúc ARKit đang bám bình thường. Ở mọi trạng thái khác nó luôn
+  /// `false`.
+  ///
+  /// [ArMeasureStatus.measured] vào danh sách ấy từ `0.10.0`, cùng lượt với
+  /// [ArMeasureController.movePoint], và **đây là lật một câu cũ**: tài liệu
+  /// bản trước nói thẳng rằng ở `measured` cờ này luôn `false` vì "đã đủ hai
+  /// điểm và không còn gì để chấm". Câu ấy nay sai — vẫn còn một cú bấm đặt
+  /// được một điểm, là cú dời. Để cờ câm ở đó là bắt người dùng biết mình đang
+  /// ngắm vào chỗ trống bằng cách BẤM, tức là dựng lại đúng cái nút chết mà cả
+  /// trường này sinh ra để chặn.
   ///
   /// Mặc định `false`: thiếu khoá nghĩa là chưa bám, tức là hình tâm ngắm an
   /// toàn (rỗng, còn phải rê tiếp).
@@ -519,6 +586,12 @@ class ArMeasureSample {
   /// giấu đúng phần người dùng cần: một điểm trên mặt ước lượng — và nhất là
   /// một điểm ngoại suy — trông y hệt một điểm chắc chắn, cho tới lúc con số
   /// cuối cùng lệch.
+  ///
+  /// Có nghĩa ở cùng ba trạng thái với [aimLocked], kể cả
+  /// [ArMeasureStatus.measured] — ở đó nó nói về cú bấm của
+  /// [ArMeasureController.movePoint] thay vì của
+  /// [ArMeasureController.placePoint], và câu hỏi thì y hệt: chỗ đang ngắm là
+  /// chỗ quan sát được, chỗ đoán ra, chỗ suy ra, hay không có chỗ nào.
   ///
   /// `null` cũng là đường của một bản Swift cũ hơn trường này. Hai đường đổ về
   /// cùng một chỗ có chủ đích: cả hai đều là "không có tầng nào để bày".
@@ -611,6 +684,18 @@ class ArMeasureSample {
 /// [ArMeasure.samples]: lớp phủ chạy tới 30 Hz, còn trạng thái và chẩn đoán đổi
 /// vài giây một lần. Gộp chung là bắt mọi người nghe trạng thái lọc ba mươi
 /// khung mỗi giây.
+///
+/// **Đây cũng là chỗ trả lời câu "tâm ngắm đang ở gần đầu nào".** Hai toạ độ
+/// dưới đây cùng hệ với tâm ngắm — giữa [ArMeasureView], mà chính app đã đặt —
+/// nên app đo được khoảng cách trên màn tới từng đầu bằng một phép trừ, rồi tự
+/// chọn ngưỡng "gần" và tự gọi [ArMeasureController.movePoint] với chỉ số 0 hay
+/// 1. Gói cố ý KHÔNG bày một trường "đầu nào đang được chỉ": nó sẽ là một nguồn
+/// sự thật thứ hai về hình học màn (app vẽ tâm ngắm ở đâu là việc của app — có
+/// màn đẩy nó lên trên một thẻ ở đáy), và nó buộc gói phải chọn một ngưỡng —
+/// đúng thứ nó không biết đủ để chọn.
+///
+/// Một đầu `null` không tạo lỗ hổng nào cho phép so ấy: đầu không chiếu được
+/// xuống màn thì cũng không thể là đầu đang nằm gần tâm ngắm.
 class ArMeasureOverlay {
   const ArMeasureOverlay({
     this.pointA,
@@ -1096,6 +1181,18 @@ ArMeasurePlaceResult _parsePlaceResult(Object? raw) {
   };
 }
 
+ArMeasureMoveResult _parseMoveResult(Object? raw) {
+  return switch (raw) {
+    'moved' => ArMeasureMoveResult.moved,
+    'missed' => ArMeasureMoveResult.missed,
+    'notReady' => ArMeasureMoveResult.notReady,
+    'noSuchPoint' => ArMeasureMoveResult.noSuchPoint,
+    // Mọi thứ không đọc được đổ về `notReady`, KHÔNG về `noSuchPoint`: xem lời
+    // chú của hai giá trị ấy.
+    _ => ArMeasureMoveResult.notReady,
+  };
+}
+
 /// Các lệnh gửi tới đúng một platform view.
 ///
 /// Dựng từ id mà [ArMeasureView.onPlatformViewCreated] báo ra. Lệnh mang theo
@@ -1134,6 +1231,54 @@ class ArMeasureController {
       return _parsePlaceResult(raw);
     } catch (_) {
       return ArMeasurePlaceResult.notReady;
+    }
+  }
+
+  /// Dời điểm thứ [index] tới chỗ tia tâm ngắm ĐANG trúng.
+  ///
+  /// Hợp lệ là `0 <= index < số điểm đã chấm` — chỉ số phải trỏ vào một điểm
+  /// đang có, không phải "phải đủ hai điểm". Với một điểm thì `movePoint(0)`
+  /// chạy được; với hai điểm thì `0` và `1`; chưa chấm gì thì mọi chỉ số ra
+  /// [ArMeasureMoveResult.noSuchPoint]. Thứ tự chỉ số là thứ tự CHẤM, và nó
+  /// khớp thứ tự của [ArMeasureDiagnostics.points] cũng như cặp
+  /// [ArMeasureOverlay.pointA]/[ArMeasureOverlay.pointB].
+  ///
+  /// **Dời hụt thì điểm cũ còn nguyên.** Tia trượt trả
+  /// [ArMeasureMoveResult.missed] và không đụng gì tới phép đo — xem lời chú
+  /// của giá trị ấy.
+  ///
+  /// **Lai lịch đi theo điểm MỚI, cả khối.** Điểm sau khi dời khai tầng tia,
+  /// quãng vượt biên, định danh mặt phẳng, góc và cự ly của lần dời **này**, đo
+  /// tại đúng cú bấm — không mang một mẩu nào của lần chấm cũ. Đây là chỗ dễ
+  /// sót nhất và cũng là chỗ đắt nhất: một điểm dời sang mặt phẳng khác mà vẫn
+  /// khai định danh cũ làm mọi tín hiệu trung thực của gói nói dối, và nói dối
+  /// bằng những con số trông hoàn toàn hợp lệ.
+  ///
+  /// **Số đo tính lại ngay**, và nó vẫn TRÔI như thường cho tới khi app chốt —
+  /// xem [ArMeasurement.tolMm] và [ArMeasureOverlay.distanceMm].
+  ///
+  /// **Điểm dời KHÔNG đi qua bộ lọc đầu mút sống.** Nó bắn một tia mới ở đúng
+  /// lúc bấm, y như [placePoint]: bộ lọc phục vụ một điểm được vẽ lại 60 lần
+  /// mỗi giây, và cái giá của nó là độ trễ — một sai số hệ thống không có chỗ
+  /// trong một điểm đã chốt.
+  ///
+  /// **Gói KHÔNG quyết định khi nào được dời.** Chuyện "hồng tâm ở gần đầu mút
+  /// thì bắt lấy" là việc của app, và app có đủ dữ kiện để tự làm: [ArMeasure.overlay]
+  /// bắn ra toạ độ MÀN của cả hai đầu, còn tâm ngắm nằm giữa [ArMeasureView] mà
+  /// chính app đã đặt. Ngưỡng "gần" là một lựa chọn về giao diện — nó phụ thuộc
+  /// cỡ ngón tay, cỡ màn, và chỗ app vẽ nút — nên gói không đặt nó, cùng một
+  /// ranh giới với [ArPointDiagnostics.overshootMm].
+  ///
+  /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureMoveResult.notReady].
+  Future<ArMeasureMoveResult> movePoint(int index) async {
+    try {
+      final raw = await ArMeasure._method.invokeMethod<String>('movePoint', {
+        'viewId': viewId,
+        'index': index,
+      });
+      return _parseMoveResult(raw);
+    } catch (_) {
+      return ArMeasureMoveResult.notReady;
     }
   }
 

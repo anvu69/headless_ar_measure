@@ -52,6 +52,21 @@ void main() {
     );
   });
 
+  // Cùng cái bẫy lần nữa, và lần này hỏng theo chiều NGƯỢC lại mới là chiều
+  // đắt: `movePoint` dời một điểm THẬT rồi trả một chuỗi lệch, Dart đọc ra
+  // `notReady`, và app nói "chưa dời được" trong khi điểm vừa nhảy chỗ trên
+  // màn. Con số và hình lại nói hai chuyện khác nhau — đúng dạng lỗi mà cả lệnh
+  // này sinh ra để đóng.
+  test('bốn chuỗi kết quả dời điểm khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArMeasureMoveResult'),
+      ArMeasureMoveResult.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArMeasureMoveResult bên Swift và bên Dart đã lệch — mọi kết quả '
+          'dời rơi về notReady, kể cả lúc điểm đã đổi chỗ xong',
+    );
+  });
+
   // Ba enum của tầng chẩn đoán đi qua đúng cái ranh giới ấy, và hỏng theo cùng
   // một kiểu câm: một chuỗi lệch bị `parseSample` bỏ về `null`, dải chẩn đoán
   // in ra "?" ở đúng ô mà nó có dữ liệu, và không lỗi nào nổ. Tệ hơn nữa vì

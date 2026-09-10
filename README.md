@@ -89,6 +89,7 @@ controller?.dispose();
 | `ArMeasure.parseOverlay()` | Builds an `ArMeasureOverlay` from raw channel data |
 | `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface. Takes no touches — put your buttons on top of it |
 | `ArMeasureController.placePoint()` | Places a point under the screen centre; returns an `ArMeasurePlaceResult` saying why not, when not |
+| `ArMeasureController.movePoint(i)` | Moves an already-placed endpoint to where the centre ray is hitting now; returns an `ArMeasureMoveResult` |
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
 | `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
@@ -121,9 +122,14 @@ untextured, near-zero feature points, the worst surface ARKit can be handed —
 produced a "Place" button that did nothing at all, with `ready` on screen the
 whole time. The ray was missing, correctly; nothing said so.
 
-It is probed with the **same** raycast `placePoint()` uses, and it is always
-`null` outside `ready` and `firstPointPlaced` — once both points are down there
-is nothing left to aim at.
+It is probed with the **same** raycast `placePoint()` uses, and it is live in
+the three states where ARKit is tracking normally: `ready`, `firstPointPlaced`
+and `measured`. Everywhere else it is `null`.
+
+`measured` joined that list in 0.10.0, and it is a reversal: through 0.9.1 the
+flag was documented as always `false` there, because "once both points are down
+there is nothing left to aim at". `movePoint()` broke that premise — with two
+points down there is still a tap that places a point. See "Moving an endpoint".
 
 **There is no grace period, and that is a fix, not an omission.** Until 0.4.0
 the flag stayed `true` for 0.3s after the first missing probe, and every hit
@@ -142,7 +148,7 @@ happened:
 | `placed` | nothing — fire a haptic |
 | `missed` | move slowly around the object until the crosshair locks |
 | `notReady` | the current `ArMeasureStatus` already carries the reason |
-| `alreadyComplete` | both points are down; read the number, or undo |
+| `alreadyComplete` | both points are down; read the number, undo, or move an end |
 
 `notReady` is also what you get when the channel cannot answer at all — a
 missing plugin, a disposed view. Never `missed`: inviting someone to keep
@@ -343,6 +349,67 @@ Three things about it that are easy to get wrong when reading the numbers:
   status listener filter thirty frames a second to find one change. The package
   also never re-sends a frame identical to the previous one, so silence means
   nothing moved — not that something broke.
+
+### Moving an endpoint
+
+Two points down and one of them landed a few millimetres off. Re-measuring both
+ends to fix one is the wrong price, and the obvious alternative — a pair of
++/- buttons that nudge the *number* — is worse. From a real device:
+
+> when the two ends are chosen a plus/minus button appears, but it **confuses
+> the user to change the number while the point on screen does not move**
+
+A number and a picture describing the same segment, disagreeing, on one screen.
+`movePoint(i)` inverts the causality: the user moves the point, and the number
+changes **because the picture changed**.
+
+```dart
+// The app decides *when* to offer this. The package only performs it.
+switch (await controller?.movePoint(1)) {
+  case ArMeasureMoveResult.moved:        // haptic; the number is already new
+  case ArMeasureMoveResult.missed:       // "move around until it locks" — the old point is intact
+  case ArMeasureMoveResult.noSuchPoint:  // your bug, or a race with undoPoint()
+  case ArMeasureMoveResult.notReady || null: // the status already says why
+}
+```
+
+**Valid indices are the ones that name a point that exists** — `0` with one
+point down, `0` and `1` with two, nothing at all before the first tap. Not
+"there must be two points": the package does not know when your app offers the
+control, and a placed point is a placed point even while the other end is still
+chasing the crosshair. The order is placement order, the same order as
+`diagnostics.points` and as `pointA`/`pointB`.
+
+**A miss leaves the old point exactly where it was.** That is contract, not an
+implementation detail: destroying a correctly placed endpoint to pay for an
+operation that *did not happen* is the worst outcome available, and it arrives
+precisely when the user is aiming at a difficult surface.
+
+**The provenance travels with the new point, whole.** Tier, overshoot, plane
+identity, grazing angle, camera distance and tracking state all describe the
+move, measured at the tap. None of the old tap survives. This is the part that
+is easy to get wrong and expensive to get wrong: a point that moves onto a
+different plane while still reporting the old plane's identity makes every
+honest signal in this package lie, in numbers that look completely valid.
+
+**The moved point does not go through the live-endpoint filter.** It fires a
+fresh ray at the moment of the tap, exactly like `placePoint()`. The filter
+exists for a point redrawn sixty times a second, and it costs latency —
+10.8 mm while panning at 0.48 m/s — which has no business inside a settled
+point. Its 100 ms hold would be worse still: it would let a *missing* ray return
+a stale coordinate, and the call would report `moved` for a move that never
+happened.
+
+**The package does not decide when a move is allowed.** "Snap to the endpoint
+the crosshair is near" is your call, and you already have everything for it:
+`ArMeasure.overlay` gives both endpoints in screen points, and the crosshair
+sits at the centre of the `ArMeasureView` you laid out. There is deliberately no
+"which endpoint is being aimed at" field — it would be a second source of truth
+about screen geometry (some layouts push the crosshair above a bottom sheet),
+and it would force the package to pick a proximity threshold, which is the one
+thing it does not know enough to pick. An endpoint that is `null` leaves no gap
+in that comparison: a point with no screen coordinate cannot be the one near the
+crosshair.
 
 ### Every sample carries how the measurement happened
 

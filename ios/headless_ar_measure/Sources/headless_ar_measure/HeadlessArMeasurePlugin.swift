@@ -110,6 +110,24 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       // ngày cho một kênh đã chết. "Chưa chấm được" thì đúng ở cả hai đường.
       result((session(for: call)?.placePoint() ?? .notReady).rawValue)
 
+    case "movePoint":
+      // Hai giá trị canh gác, và chúng KHÔNG giống nhau.
+      //
+      // Thiếu view, hay thiếu/sai kiểu `index` trên dây: cả hai là `.notReady`.
+      // Không có view nghĩa là không có phiên nào; còn một `index` không đọc
+      // được là hai đầu dây lệch pha — một chuyện của KÊNH, không phải một lời
+      // khai về việc app đang có mấy điểm. Trả `.noSuchPoint` ở đó là nói dối
+      // app về dữ liệu của chính app, và app tin lời ấy sẽ giấu luôn cái nút
+      // dời cho một điểm nó đang vẽ trên màn.
+      //
+      // Chỉ tầng phiên mới được nói `.noSuchPoint`, vì chỉ nó biết đang có mấy
+      // điểm.
+      guard let index = Self.index(from: call) else {
+        result(ArMeasureMoveResult.notReady.rawValue)
+        return
+      }
+      result((session(for: call)?.movePoint(at: index) ?? .notReady).rawValue)
+
     case "undoPoint":
       session(for: call)?.undoPoint()
       result(nil)
@@ -166,6 +184,19 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
     // ép qua `Int64` trực tiếp trượt ở bản 32-bit, nên đi vòng qua `NSNumber`.
     guard let raw = args["viewId"] as? NSNumber else { return nil }
     return raw.int64Value
+  }
+
+  /// Chỉ số điểm của một lệnh `movePoint`. `nil` là **không đọc được**, không
+  /// phải "ngoài khoảng" — khoảng hợp lệ là chuyện của phiên, nơi duy nhất biết
+  /// đang có mấy điểm.
+  ///
+  /// Đi vòng qua `NSNumber` cùng lối với [viewId(from:)]: kênh chuẩn của Flutter
+  /// gửi số nguyên Dart về Swift dưới dạng `NSNumber`, và ép thẳng sang `Int`
+  /// trượt ở bản 32-bit.
+  private static func index(from call: FlutterMethodCall) -> Int? {
+    guard let args = call.arguments as? [String: Any] else { return nil }
+    guard let raw = args["index"] as? NSNumber else { return nil }
+    return raw.intValue
   }
 
   private func session(for call: FlutterMethodCall) -> ArMeasureSession? {

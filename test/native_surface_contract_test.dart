@@ -1405,22 +1405,27 @@ void main() {
       );
     });
 
-    test('định danh ghi đúng MỘT lần, lúc chấm — không đường nào viết lại', () {
+    test('định danh chỉ ghi ở một lượt BẮN TIA — không đường nào viết lại', () {
       final khongChuThich = _withoutComments(sessionSource);
 
-      expect(
-        RegExp(
-          r'pointDiagnostics\[[^\]]+\]\s*=',
-        ).allMatches(khongChuThich).length,
-        1,
-        reason:
-            'Chỉ `placePoint` được ghi vào khối chẩn đoán, và ghi đúng lúc chấm. '
-            'Một lượt ghi thứ hai ở bất cứ đâu là một đường viết lại định danh '
-            'sau cú bấm — mà đó chính là quyết định gói đã bác: ARKit GỘP mặt '
-            'phẳng và không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO, nên '
-            'mọi lượt viết lại là một phép đoán, và một cú đoán sai in ra đúng '
-            'chữ "cùng mặt phẳng".',
-      );
+      // Đúng HAI đường ghi, và cả hai là một cú chạm của người dùng kèm một
+      // lượt raycast mới: `placePoint` (chấm) và `movePoint` (dời). Đường thứ
+      // ba ở bất cứ đâu là một lượt viết lại định danh mà KHÔNG có tia nào đứng
+      // sau — tức là một phép đoán, mà đó chính là quyết định gói đã bác: ARKit
+      // GỘP mặt phẳng và không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO,
+      // nên một cú đoán sai in ra đúng chữ "cùng mặt phẳng".
+      final luotGhi = RegExp(
+        r'pointDiagnostics\[[^\]]+\]\s*=',
+      ).allMatches(khongChuThich).length;
+      expect(luotGhi, 2, reason: 'chỉ `placePoint` và `movePoint` được ghi');
+
+      for (final ten in ['func placePoint()', 'func movePoint(at index: Int)']) {
+        expect(
+          _withoutComments(_swiftMethodBody(sessionSource, ten)),
+          contains('pointDiagnostics['),
+          reason: '`$ten` phải tự ghi lai lịch của lượt bắn nó vừa làm',
+        );
+      }
 
       expect(
         _withoutComments(
@@ -1837,6 +1842,308 @@ void main() {
         reason:
             'Chỗ đọc phải là đường khung hình — đó là nơi duy nhất có một '
             '`ARFrame` để đọc, và là nhịp mà con số này thật sự đổi.',
+      );
+    });
+  });
+
+  /// Dời một đầu mút đã chấm — vào từ 0.10.0.
+  ///
+  /// Vì sao nó tồn tại, nguyên văn lượt máy thật: *"khi chọn xong 2 đầu thì
+  /// hiện ra nút cộng trừ, tuy nhiên nó gây confuse cho user khi thay đổi số mà
+  /// điểm trên màn hình không đổi"*. Con số và HÌNH nói hai chuyện khác nhau
+  /// trên cùng một màn. Đường ra không phải một cái nút chỉnh số khéo hơn: nó
+  /// là cho người dùng dời chính cái điểm, để con số đổi VÌ hình đổi.
+  ///
+  /// Cả nhóm canh hai dạng hỏng câm rất riêng của một lệnh DỜI, và không dạng
+  /// nào nổ:
+  ///
+  /// 1. **Dời hụt phá luôn điểm cũ.** Tia trượt, điểm biến mất, và người dùng
+  ///    mất một đầu họ đã chấm đúng — để "sửa" một thứ họ chỉ định nhích đi vài
+  ///    milimét.
+  /// 2. **Điểm mới mang lai lịch CŨ.** Nó dời sang một mặt phẳng khác nhưng vẫn
+  ///    khai định danh, tầng tia và van của cú bấm trước. Mọi tín hiệu trung
+  ///    thực gói đã dựng — van vượt biên, định danh mặt phẳng, góc sượt — nói
+  ///    dối về đúng cái điểm vừa đổi chỗ, và chúng nói dối một cách trông hoàn
+  ///    toàn hợp lệ.
+  group('dời một đầu mút', () {
+    test('lệnh khớp từng chữ giữa Swift và Dart', () {
+      expect(pluginSource, contains('case "movePoint":'));
+      expect(dartSource, contains("invokeMethod<String>('movePoint'"));
+
+      // Bốn giá trị trên dây, và chúng phải khớp từng chữ ở cả hai đầu — danh
+      // sách hai bên do `status_contract_test.dart` canh. Ở đây canh nửa còn
+      // lại: Dart phải DỊCH được cả bốn. Thiếu một nhánh thì nó rơi về `_ =>`
+      // và trả `notReady` cho một lượt dời đã chạy xong, không lỗi nào nổ, và
+      // câu nói với người dùng là "chưa dời được" trong khi điểm vừa đổi chỗ.
+      for (final v in ['moved', 'missed', 'notReady', 'noSuchPoint']) {
+        expect(
+          dartSource,
+          contains("'$v' => ArMeasureMoveResult."),
+          reason: 'Dart không dịch nổi giá trị dây `$v`',
+        );
+      }
+    });
+
+    /// Ca số một của lượt này: **dời hụt thì điểm cũ còn nguyên**.
+    ///
+    /// Canh bằng THỨ TỰ trong thân hàm, vì đó là chỗ lỗi sống: một cách cài
+    /// "gỡ điểm cũ ra rồi chấm lại" đọc rất tự nhiên, chạy đúng ở mọi lượt
+    /// trúng, và chỉ hỏng ở lượt trượt — đúng lượt người dùng đang ngắm vào một
+    /// bề mặt tệ, tức là đúng lượt họ cần lệnh này nhất.
+    test('dời hụt thì điểm cũ còn nguyên', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      final banTia = than.indexOf('raycastFromReticle()');
+      expect(
+        banTia,
+        greaterThanOrEqualTo(0),
+        reason:
+            'Lệnh dời phải bắn CHÍNH tia mà `placePoint` bắn. Một tia gần giống '
+            'là một lời hứa hão: tâm ngắm khoá, người dùng bấm, điểm không đi '
+            'đâu cả.',
+      );
+      expect(
+        than,
+        contains('return .missed'),
+        reason:
+            'Tia trượt có một câu riêng — "rê máy quanh vật cho tới khi tâm '
+            'ngắm khoá lại". Gộp nó vào `notReady` là mời người dùng chờ một '
+            'phiên đang chạy hoàn toàn bình thường.',
+      );
+
+      for (final dotBien in [
+        'anchors[',
+        'session.remove(',
+        'pointDiagnostics',
+      ]) {
+        final viTri = than.indexOf(dotBien);
+        expect(
+          viTri,
+          greaterThan(banTia),
+          reason:
+              '`$dotBien` nằm TRƯỚC lời gác tia. Một lượt trượt ở đó đã kịp phá '
+              'điểm cũ, và người dùng mất một đầu họ chấm đúng để đổi lấy một '
+              'lượt dời không xảy ra. Dời hụt phải là một phép rỗng.',
+        );
+      }
+    });
+
+    /// Ca số hai: **lai lịch của điểm sau khi dời là lai lịch MỚI**.
+    ///
+    /// Ca dời trong CÙNG một mặt phẳng không phân biệt được hai cách cài, nên
+    /// thứ canh được ở tầng chữ là NGUỒN của khối chẩn đoán: nó phải dựng từ
+    /// lượt trúng MỚI, cả khối một lần, không phải vá vài trường lên khối cũ.
+    test('lai lịch của điểm sau khi dời là lai lịch MỚI', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      expect(
+        than,
+        contains('makeDiagnostics(for: hit)'),
+        reason:
+            'Tầng tia, van vượt biên, định danh mặt phẳng, góc và cự ly chỉ tồn '
+            'tại trong `ARRaycastResult` của đúng lượt bắn NÀY. Dựng lại khối '
+            'chẩn đoán từ lượt bắn cũ là khai một mặt phẳng người dùng vừa rời '
+            'khỏi.',
+      );
+      expect(
+        than,
+        contains('pointDiagnostics.removeValue(forKey:'),
+        reason:
+            'Khối chẩn đoán khoá theo `identifier` của anchor, và anchor cũ bị '
+            'thay bằng một anchor MỚI (`ARAnchor.transform` là readonly). Không '
+            'gỡ khoá cũ thì nó nằm lại trong map suốt phiên.',
+      );
+
+      // Không đường nào CHÉP một khối chẩn đoán sang khoá khác. Đây là cách
+      // viết sai trông tự nhiên nhất — "giữ lại lai lịch cho khỏi mất" — và nó
+      // dựng ra đúng cảnh hỏng: một điểm nằm trên tường, khai mình ở trên mặt
+      // bàn.
+      for (final chep in RegExp(
+        r'pointDiagnostics\[[^\]]+\]\s*=\s*([^\n]+)',
+      ).allMatches(_withoutComments(sessionSource))) {
+        expect(
+          chep.group(1),
+          startsWith('makeDiagnostics(for:'),
+          reason:
+              'Mọi lượt ghi vào khối chẩn đoán phải là một PHÉP ĐO mới. Chép '
+              'một khối cũ sang khoá mới là dựng lại lai lịch của một cú bấm '
+              'chưa từng xảy ra ở chỗ ấy.',
+        );
+      }
+    });
+
+    /// Ca số ba: chỉ số ngoài khoảng, và lúc chưa đủ hai điểm.
+    test('chỉ số phải NAME một điểm đang có, và luật ấy nằm ở MỘT chỗ', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      expect(
+        than,
+        contains('anchors.indices.contains(index)'),
+        reason:
+            'Luật là "chỉ số phải trỏ vào một điểm ĐANG CÓ" — không phải "phải '
+            'đủ hai điểm". Gói không biết app đang bày nút dời lúc nào, và một '
+            'điểm đã chấm là một điểm đã chấm dù đầu kia còn đang chạy.',
+      );
+      expect(
+        than,
+        contains('return .noSuchPoint'),
+        reason:
+            'Chỉ số không trỏ vào đâu là một câu về DỮ LIỆU CỦA APP, không phải '
+            'về ARKit. Đổ nó vào `notReady` là bảo app "chờ phiên bám lại" cho '
+            'một điểm sẽ không bao giờ tồn tại.',
+      );
+
+      // Dart KHÔNG chép luật ấy. Hai bản chép lệch nhau thì Dart trả
+      // `noSuchPoint` cho một chỉ số Swift chấp nhận, và lệnh không rời máy.
+      final thanDart = dartSource.substring(
+        dartSource.indexOf('Future<ArMeasureMoveResult> movePoint('),
+      );
+      expect(
+        thanDart.substring(0, thanDart.indexOf('\n  }')),
+        isNot(contains('noSuchPoint')),
+        reason:
+            'Chỉ tầng Swift biết đang có mấy điểm. Dart đoán thêm một lượt là '
+            'dựng một nguồn sự thật thứ hai về số điểm — thứ mà chính luồng '
+            '`samples` đã nói.',
+      );
+    });
+
+    test('chỉ số kiểm TRƯỚC trạng thái', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      // So với lời gác TRẠNG THÁI, không so với `.notReady` đầu tiên trong
+      // thân: lời gác `isStopped` cũng trả `.notReady` và nó đứng trước mọi thứ
+      // — đúng chỗ của nó, vì một phiên đã dừng thì không có mảng điểm nào để
+      // tra chỉ số.
+      expect(
+        than.indexOf('.noSuchPoint'),
+        lessThan(than.indexOf('reticleIsMeaningful(')),
+        reason:
+            'Cùng một luật thứ tự với `alreadyComplete` đi trước `notReady` ở '
+            '`placePoint`: nửa giây rung tay không được biến "điểm ấy không tồn '
+            'tại" thành "chờ phiên bám lại". Chờ bao lâu cũng không làm điểm số '
+            '5 mọc ra.',
+      );
+    });
+
+    /// Điểm ĐANG DỜI không đi qua `LivePointFilter`, và đó là một quyết định,
+    /// không phải một chỗ sót.
+    test('dời KHÔNG đi qua bộ lọc đầu mút sống', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      expect(
+        than,
+        isNot(contains('livePoint')),
+        reason:
+            'Bộ lọc tồn tại cho một điểm được VẼ LẠI 60 lần mỗi giây; một điểm '
+            'dời được đặt đúng một lần cho mỗi cú chạm, y như `placePoint`. Cái '
+            'giá của bộ lọc là ĐỘ TRỄ (10,8 mm ở nhịp rê 0,48 m/s), nên cho '
+            'điểm dời đi qua đó là chôn một sai số hệ thống vào một điểm ĐÃ '
+            'CHỐT. Tệ hơn: quãng ôm 100 ms sẽ cho một lượt TRƯỢT trả về một '
+            'toạ độ cũ, và lệnh báo `moved` cho một cú dời chưa xảy ra.',
+      );
+    });
+
+    test('điểm mới là một ARAnchor MỚI, và anchor cũ được gỡ khỏi phiên', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
+
+      expect(
+        than,
+        contains('ARAnchor('),
+        reason:
+            '`ARAnchor.transform` là readonly — tài liệu của Apple bảo bỏ '
+            'anchor cũ và thêm anchor mới. Không có đường nào "dời" một anchor '
+            'tại chỗ.',
+      );
+      expect(
+        than,
+        contains('transform: hit.result.worldTransform'),
+        reason:
+            'Anchor mới dựng từ lượt trúng NÀY. Dựng từ bất cứ toạ độ nào khác '
+            '— một điểm đã làm mượt, một transform cũ — là dời điểm tới một chỗ '
+            'không phải chỗ người dùng đang chỉ.',
+      );
+      expect(
+        than,
+        contains('sceneView.session.remove(anchor:'),
+        reason:
+            'Không gỡ là để lại một anchor mồ côi trong phiên ARKit cho mỗi lượt '
+            'dời. Nó không vẽ gì (node bị chặn), nên nó tích lại im lặng.',
+      );
+      expect(than, contains('sceneView.session.add(anchor:'));
+      expect(
+        than,
+        contains('publish(force: true)'),
+        reason:
+            'Số đo phải đổi NGAY ở cú chạm, không đợi nhịp 15 Hz hay đợi số đo '
+            'nhích quá 0,5 mm — đây là một lượt ĐỔI TRẠNG THÁI, cùng lối với '
+            '`placePoint` và `undoPoint`.',
+      );
+    });
+
+    /// Tâm ngắm phải còn nói được ở `measured`, nếu không thì cả lượt này ship
+    /// ra một cái nút chết.
+    test('tâm ngắm còn sống khi đã đủ hai điểm, và luật ấy ở MỘT chỗ', () {
+      final sach = _withoutComments(sessionSource);
+      final khaiBao = _withoutComments(
+        _swiftMethodBody(
+          sessionSource,
+          'private static func reticleIsMeaningful(',
+        ),
+      );
+
+      expect(
+        khaiBao,
+        contains('.measured'),
+        reason:
+            'Trước 0.10.0, hai điểm đã đủ thì tâm ngắm hết nghĩa — không còn gì '
+            'để chấm. Lệnh dời phá đúng giả định ấy: ở `measured` vẫn có một cú '
+            'bấm đặt được một điểm. Để tâm ngắm câm ở đó là bắt người dùng biết '
+            'mình đang ngắm vào chỗ trống bằng cách BẤM — đúng cái nút chết mà '
+            'cờ này sinh ra để chặn.',
+      );
+      expect(
+        RegExp(r'reticleIsMeaningful\(').allMatches(sach).length,
+        6,
+        reason:
+            'Một lần khai và NĂM chỗ gọi — lượt dò, hai lời gác cuối trong '
+            '`publish` (tầng ngắm và phép đếm vân), `placePoint`, `movePoint`. '
+            'Năm bản chép lệch nhau thì tâm ngắm khoá trong khi '
+            'lệnh dời trả `notReady`, hoặc ngược lại: lệnh chạy được trong khi '
+            'tâm ngắm nói không có gì để bấm. Cả hai chiều đều là một cái nút '
+            'nói dối, và không lỗi nào nổ.',
+      );
+
+      // Lời gác viết tay phải chỉ còn ĐÚNG một chỗ: trong chính hàm khai báo
+      // luật. Một bản sót lại ở ngoài là một luật thứ hai về cùng một câu hỏi,
+      // và nó đứng im khi luật chính đổi.
+      expect(
+        RegExp(
+          r'status == \.ready \|\| status == \.firstPointPlaced',
+        ).allMatches(sach.replaceFirst(khaiBao, '')),
+        isEmpty,
+        reason: 'còn một lời gác trạng thái viết tay ngoài `reticleIsMeaningful`',
+      );
+
+      expect(
+        dartSource,
+        contains('ArMeasureStatus.measured'),
+        reason:
+            'Tài liệu của `aimLocked` từng nói thẳng rằng nó LUÔN `false` ở '
+            '`measured`. Câu ấy nay sai, và một câu sai trong tài liệu của '
+            'chính trường ấy là chỗ người đọc tin trước tiên.',
       );
     });
   });
