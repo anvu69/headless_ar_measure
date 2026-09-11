@@ -798,6 +798,7 @@ class ArMeasureOverlay {
     this.pointB,
     this.bIsLive = false,
     this.distanceMm,
+    this.label,
   });
 
   /// Điểm thứ nhất trên màn. `null` khi chưa chấm điểm nào, và cũng `null` khi
@@ -857,6 +858,116 @@ class ArMeasureOverlay {
   /// Không kèm dung sai. Dung sai đi với số đã chốt ([ArMeasurement.tolMm]);
   /// một con số đang trôi theo tay người thì ± của nó chưa nói được gì.
   final double? distanceMm;
+
+  /// Chỗ tấm ảnh dán ĐÃ đứng trên màn ở khung hình này — xem [ArLabelPlacement].
+  ///
+  /// `null` khi không có nhãn nào trên màn: chưa gửi ảnh nào
+  /// ([ArMeasureController.setLabel]), chưa có đoạn thẳng nào, hay trung điểm
+  /// đoạn nằm ngoài khối nhìn.
+  ///
+  /// **Đây là một lời KHAI, không phải một lời đề nghị.** Node đã được đặt vào
+  /// chỗ ấy trong cảnh SceneKit rồi; ba con số này chỉ nói ra nó nằm đâu, để một
+  /// tấm ảnh chụp dựng lại được đúng hình ấy trên canvas.
+  final ArLabelPlacement? label;
+}
+
+/// Tấm ảnh app gửi xuống để gói dán lên đoạn thẳng.
+///
+/// **Gói không biết trên ảnh viết gì**, và đó là ranh giới của kho này: hệ
+/// thiết kế, tệp phông và mọi khái niệm sản phẩm nằm ở app. Ảnh vào đây là một
+/// tấm PNG đã nặn xong — chữ, màu, bo góc, tất cả.
+@immutable
+class ArLabelImage {
+  const ArLabelImage({required this.png, required this.pixelRatio});
+
+  /// Tấm ảnh, mã hoá **PNG**.
+  ///
+  /// PNG chứ không phải RGBA thô, và đó là một lựa chọn về độ chắc chứ không về
+  /// tốc độ: một mảng byte thô phải mang theo bề ngang, bề cao, thứ tự kênh và
+  /// alpha đã nhân sẵn hay chưa — bốn quy ước, bốn chỗ để hai đầu dây lệch nhau
+  /// mà không lỗi nào nổ (một tấm ảnh lệch một kênh trông vẫn là một tấm ảnh).
+  /// PNG mang sẵn cả bốn, và `UIImage(data:)` đọc nó không cần hỏi gì.
+  final Uint8List png;
+
+  /// Số điểm ảnh trên một point của [png] — 2 hay 3 trên máy Retina.
+  ///
+  /// Nó vào thẳng `UIImage(data:scale:)`, nên **cỡ POINT** của tấm ảnh là
+  /// `cỡ điểm ảnh / pixelRatio`, và luật cỡ của gói nói chuyện bằng point.
+  /// Truyền 1 cho một tấm ảnh dựng ở `@3x` là dán một tấm ảnh to gấp ba trên
+  /// màn — trông y hệt một lựa chọn thiết kế, nên không ai soi ra được.
+  ///
+  /// Đọc từ `MediaQuery.devicePixelRatioOf(context)` (hay
+  /// `ui.FlutterView.devicePixelRatio`), cùng con số mà app dùng để dựng ảnh.
+  final double pixelRatio;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ArLabelImage &&
+          other.pixelRatio == pixelRatio &&
+          other.png.length == png.length;
+
+  @override
+  int get hashCode => Object.hash(png.length, pixelRatio);
+}
+
+/// Chỗ tấm ảnh dán đứng trên màn, đơn vị **point của khung ngắm**.
+///
+/// Cùng hệ toạ độ với [ArMeasureOverlay.pointA] và [ArMeasureOverlay.pointB].
+@immutable
+class ArLabelPlacement {
+  const ArLabelPlacement({
+    required this.center,
+    required this.rotationDeg,
+    required this.scale,
+  });
+
+  /// Tâm tấm ảnh trên màn.
+  final Offset center;
+
+  /// Góc xoay quanh [center], **độ**, dương theo chiều kim đồng hồ (trục y của
+  /// màn hướng xuống — cùng chiều với `Canvas.rotate` của Flutter).
+  ///
+  /// **Đã gồm phép lật nửa vòng.** Gói lật tấm ảnh khi chữ sắp chúc ngược, và
+  /// phép lật ấy có TRỄ — nó phụ thuộc lịch sử, nên app không tính lại được từ
+  /// một khung hình đơn lẻ. Đó là lý do con số này đi trên dây thay vì để app
+  /// tự suy từ hai đầu đoạn.
+  final double rotationDeg;
+
+  /// Cỡ trên màn so với cỡ tấm ảnh đã gửi: `1` là đúng cỡ.
+  ///
+  /// Gói giữ cỡ trên màn gần như không đổi theo khoảng cách, nhưng có KẸP ở hai
+  /// đầu tầm đo — ngoài quãng ấy con số này rời khỏi `1`. Người vẽ lại tấm ảnh
+  /// (ảnh chụp) phải nhân cỡ theo nó, nếu không thì tấm ảnh trong ảnh chụp to
+  /// hơn hay nhỏ hơn thứ vừa hiện trên màn.
+  final double scale;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ArLabelPlacement &&
+          other.center == center &&
+          other.rotationDeg == rotationDeg &&
+          other.scale == scale;
+
+  @override
+  int get hashCode => Object.hash(center, rotationDeg, scale);
+}
+
+/// Kết quả một lượt [ArMeasureController.setLabel].
+enum ArMeasureLabelResult {
+  /// Đã dán (hoặc đã gỡ, khi app gửi `null`).
+  ok,
+
+  /// Không có phiên nào: kênh chết, plugin chưa đăng ký, hay view đã chết.
+  notReady,
+
+  /// Phiên còn sống, nhưng **tấm ảnh không giải mã được**.
+  ///
+  /// Tách khỏi [notReady] vì hai chỗ phải sửa khác hẳn nhau. Và ở đường này
+  /// **nhãn đang có còn nguyên**: gỡ nó là để một lỗi dựng ảnh nhất thời xoá
+  /// mất con số trên màn.
+  badImage,
 }
 
 /// Cửa vào duy nhất tới phiên đo AR.
@@ -1220,6 +1331,25 @@ class ArMeasure {
       pointB: _parsePoint(raw['bx'], raw['by']),
       bIsLive: rawBIsLive is bool ? rawBIsLive : false,
       distanceMm: _parseFinite(raw['distanceMm']),
+      label: _parseLabel(raw),
+    );
+  }
+
+  /// Chỗ đứng của tấm ảnh dán, hoặc `null` khi khung không chở nó.
+  ///
+  /// **Cả bốn trường phải có mặt**, cùng luật với [_parsePoint]: bù mặc định
+  /// cho một trường thiếu là vẽ một tấm ảnh ở góc trên bên trái, không xoay, cỡ
+  /// 0 — ba chỗ trông hoàn toàn hợp lệ, nên không ai soi ra được.
+  static ArLabelPlacement? _parseLabel(Map<Object?, Object?> raw) {
+    final center = _parsePoint(raw['lx'], raw['ly']);
+    final rotation = _parseFinite(raw['lrot']);
+    final scale = _parseFinite(raw['lscale']);
+    if (center == null || rotation == null || scale == null) return null;
+    if (scale <= 0) return null;
+    return ArLabelPlacement(
+      center: center,
+      rotationDeg: rotation,
+      scale: scale,
     );
   }
 
@@ -1478,6 +1608,51 @@ class ArMeasureController {
       return _parseReleaseResult(raw);
     } catch (_) {
       return ArMeasureReleaseResult.notReady;
+    }
+  }
+
+  /// Dán một tấm ảnh lên đoạn thẳng đang đo, hoặc **gỡ** nó khi [image] là
+  /// `null`.
+  ///
+  /// Gói đặt tấm ảnh thành một node TRONG CẢNH: tâm ở trung điểm đoạn, mặt
+  /// phẳng của nó chứa đoạn, và nó quay quanh trục của đoạn để luôn hướng mặt
+  /// về camera — đọc được từ mọi phía, như con số trên một cái thước dây thật.
+  /// Chữ không bao giờ chúc ngược: gói lật nửa vòng khi cần, và phép lật có
+  /// TRỄ. Cỡ trên màn giữ gần như không đổi theo khoảng cách, có kẹp ở hai đầu
+  /// tầm đo.
+  ///
+  /// **Vì sao phải đi đường này thay vì app tự vẽ đè lên khung ngắm.** Đoạn
+  /// thẳng và hai chấm là node trong cảnh: dựng một lần, rồi ARKit cập nhật tư
+  /// thế camera mỗi khung. Một con số vẽ ở tầng Flutter từ toạ độ đã chiếu chạy
+  /// theo nhịp KHÁC (kênh lớp phủ 30 Hz so với SceneKit 60 Hz), nên nó GIẬT so
+  /// với chính đoạn thẳng nó nằm trên, không bao giờ là một phần của đoạn, và
+  /// biến mất khi một đầu rơi ra sau lưng camera.
+  ///
+  /// **Gói không biết trên ảnh viết gì** — xem [ArLabelImage].
+  ///
+  /// Chỗ tấm ảnh ĐÃ đứng bắn lên [ArMeasure.overlay] ở mỗi khung
+  /// ([ArMeasureOverlay.label]), để một tấm ảnh chụp dựng lại được đúng hình
+  /// ấy: [captureFrame] trả một khung THUẦN, không có chữ nào.
+  ///
+  /// Gọi bao nhiêu lần cũng được, và app **nên** gọi lại mỗi khi chữ đổi — gói
+  /// chỉ dựng lại hình học khi TỈ LỆ tấm ảnh đổi, nên một lượt gửi cùng cỡ chỉ
+  /// tốn một lượt nạp ảnh.
+  ///
+  /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureLabelResult.notReady].
+  Future<ArMeasureLabelResult> setLabel(ArLabelImage? image) async {
+    try {
+      final raw = await ArMeasure._method.invokeMethod<String>('setLabel', {
+        'viewId': viewId,
+        'png': image?.png,
+        'pixelRatio': image?.pixelRatio ?? 1,
+      });
+      return switch (raw) {
+        'ok' => ArMeasureLabelResult.ok,
+        'badImage' => ArMeasureLabelResult.badImage,
+        _ => ArMeasureLabelResult.notReady,
+      };
+    } catch (_) {
+      return ArMeasureLabelResult.notReady;
     }
   }
 

@@ -25,6 +25,9 @@ void main() {
   final overshootSource = File(
     'ios/headless_ar_measure/Sources/headless_ar_measure/PlaneOvershoot.swift',
   ).readAsStringSync();
+  final labelSource = File(
+    'ios/headless_ar_measure/Sources/headless_ar_measure/LabelPlacement.swift',
+  ).readAsStringSync();
   final dartSource = File('lib/headless_ar_measure.dart').readAsStringSync();
 
   group('quyền camera', () {
@@ -153,6 +156,178 @@ void main() {
               'ở đúng nhịp đoạn thẳng đang trôi. Node phải dựng một lần ở '
               '`init` rồi chỉ đổi `simdPosition`/`isHidden`.',
         );
+      }
+    });
+  });
+
+  group('tấm ảnh dán trên đoạn', () {
+    /// **Đây là ca canh chính của cả lượt 0.12.0.**
+    ///
+    /// Luật một câu: *tấm ảnh số đo phải được làm ra y như đường kẻ và hai chấm
+    /// đầu mút được làm ra* — một node trong cảnh, đặt lại trong CÙNG lượt gọi
+    /// mỗi khung hình. Tách nó ra một đường riêng (một hẹn giờ, một
+    /// `SCNTransformConstraint`, hay tệ nhất là để app vẽ đè ở tầng Flutter) là
+    /// dựng lại đúng cái lỗi kiến trúc mà lượt này đi bỏ: hai nhịp khác nhau,
+    /// và con số GIẬT so với chính đoạn thẳng nó nằm trên.
+    ///
+    /// Ca này đọc thân `refreshOverlay` — cùng hàm đã đặt hai chấm và đoạn
+    /// thẳng — và đòi lượt đặt nhãn nằm trong đó.
+    test('nhãn đặt lại trong CÙNG lượt với đoạn thẳng, không đi nhịp riêng', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func refreshOverlay('),
+      );
+      expect(
+        than,
+        contains('measureNodes.update('),
+        reason: 'hình đo phải còn cập nhật ở đây',
+      );
+      expect(
+        than,
+        contains('refreshLabel('),
+        reason:
+            'Nhãn phải đặt lại trong CÙNG lượt gọi với đoạn thẳng. Một đường '
+            'riêng ở nhịp khác là đúng cái lỗi kiến trúc mà 0.12.0 đi bỏ — và '
+            'triệu chứng của nó (nhãn giật so với đoạn) chỉ thấy được trên máy '
+            'thật đang rê camera.',
+      );
+    });
+
+    test('phép đặt nhãn nằm ở tệp KHÔNG nhập ARKit/SceneKit/UIKit', () {
+      for (final khung in [
+        'import ARKit',
+        'import SceneKit',
+        'import UIKit',
+        'import Flutter',
+      ]) {
+        expect(
+          labelSource,
+          isNot(contains(khung)),
+          reason:
+              'LabelPlacement.swift phải dịch và chạy được bằng `swiftc` trên '
+              'macOS — đó là điều kiện để ba luật số của nó (trễ của phép lật, '
+              'luật cỡ, hệ trục) có ca kiểm. Nhập `$khung` là bỏ hết chúng.',
+        );
+      }
+      expect(labelSource, contains('import Foundation'));
+      expect(labelSource, contains('import simd'));
+    });
+
+    /// "Vẽ sau" một mình không đủ ở 3D — và hai vế của luật phải đi cùng nhau.
+    test('nhãn tắt bộ đệm sâu VÀ đặt thứ tự vẽ tường minh', () {
+      final than = _withoutComments(
+        _swiftMethodBody(
+          sessionSource,
+          'private static func makeLabelMaterial(',
+        ),
+      );
+      expect(than, contains('readsFromDepthBuffer = false'));
+      expect(than, contains('writesToDepthBuffer = false'));
+      expect(
+        _withoutComments(sessionSource),
+        contains('renderingOrder = labelRenderingOrder'),
+        reason:
+            'Tắt bộ đệm sâu thì thứ tự trên màn do `renderingOrder` quyết, nên '
+            'nó phải đặt TƯỜNG MINH. Trông vào mặc định là đúng cho tới cái '
+            'ngày nó không, và lúc ấy đường kẻ chạy xuyên qua con số.',
+      );
+    });
+
+    /// Luật trễ phụ thuộc LỊCH SỬ, nên phải có đúng một chỗ nhớ.
+    test('trạng thái lật nhớ ở phiên, hàm tính thì THUẦN', () {
+      expect(
+        labelSource,
+        contains('wasFlipped: Bool'),
+        reason:
+            'Trạng thái lật phải đi vào rồi đi ra bằng THAM SỐ. Chôn một biến '
+            'nhớ trong LabelPlacement là biến một hàm kiểm được bằng swiftc '
+            'thành một hàm không kiểm được.',
+      );
+      expect(
+        labelSource,
+        isNot(RegExp(r'\bstatic var\b')),
+        reason: 'không biến nhớ tĩnh nào trong tệp thuần',
+      );
+      expect(
+        _withoutComments(sessionSource),
+        contains('private var labelFlipped = false'),
+        reason: 'chỗ nhớ DUY NHẤT của luật trễ nằm ở phiên',
+      );
+    });
+
+    /// Gói không được chôn một cỡ chữ: cỡ đọc TỪ tấm ảnh app gửi xuống.
+    test('cỡ danh định đọc từ tấm ảnh, không phải một hằng của gói', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func refreshLabel('),
+      );
+      expect(
+        than,
+        contains('measureNodes.labelPointSize.height'),
+        reason:
+            'Cỡ danh định của nhãn là cỡ POINT của chính tấm ảnh app gửi '
+            'xuống. Một hằng trong gói là gói đang quyết cỡ chữ của app — và '
+            'nó quyết sai ở mọi máy có tỉ lệ điểm ảnh khác.',
+      );
+    });
+
+    /// Không có đoạn thì không có gì để chú thích.
+    test('hết đoạn thẳng thì nhãn ẩn theo, cùng một lối ra', () {
+      final than = _withoutComments(
+        _swiftMethodBody(
+          sessionSource,
+          'func update(points: [ArMeasureMark], live: SIMD3<Float>?)',
+        ),
+      );
+      expect(
+        than,
+        contains('hideLabel()'),
+        reason:
+            'Lối ra "không có cặp đầu mút nào" là chỗ DUY NHẤT mà "vừa còn '
+            'đoạn, nay hết" đi qua. Không ẩn nhãn ở đó thì con số nằm lại giữa '
+            'không trung sau một lượt Hoàn tác.',
+      );
+    });
+
+    test('bốn khoá của chỗ đứng nhãn khớp từng chữ giữa Swift và Dart', () {
+      for (final key in ['lx', 'ly', 'lrot', 'lscale']) {
+        expect(
+          sessionSource,
+          contains('"$key":'),
+          reason:
+              'Khoá `$key` không còn được tầng Swift ghi vào khung lớp phủ. '
+              'Ảnh chụp đọc bốn khoá này để dựng lại con số; thiếu một khoá là '
+              'cả khối về `null` và tấm ảnh mất con số — trong khi trên màn nó '
+              'vẫn nằm đó.',
+        );
+        expect(
+          dartSource,
+          contains("raw['$key']"),
+          reason: 'Khoá `$key` không còn được Dart đọc.',
+        );
+      }
+    });
+
+    test('lệnh dán ảnh có mặt ở kênh, và KHÔNG bắt buộc phải có ảnh', () {
+      expect(pluginSource, contains('case "setLabel":'));
+      expect(
+        pluginSource,
+        contains('FlutterStandardTypedData'),
+        reason:
+            'Byte của tấm ảnh đi qua kênh chuẩn dưới dạng `FlutterStandardTypedData`; '
+            'ép sang `Data` thẳng thì `png` luôn `nil` và nhãn không bao giờ hiện.',
+      );
+      expect(
+        dartSource,
+        contains("invokeMethod<String>('setLabel'"),
+        reason: 'tên lệnh lệch một chữ là mọi lượt dán rơi vào hư không',
+      );
+    });
+
+    /// Gói không biết trên ảnh viết gì — ranh giới của kho này.
+    test('gói không dựng chữ, không biết trên ảnh viết gì', () {
+      for (final src in [sessionSource, labelSource, pluginSource]) {
+        expect(src, isNot(contains('SCNText')));
+        expect(src, isNot(contains('NSAttributedString')));
+        expect(src, isNot(contains('UIFont')));
       }
     });
   });
@@ -515,9 +690,7 @@ void main() {
     // bằng 1/2 hay 1/3 khung ngắm — và lớp phủ vẽ đè lên nó lệch đúng chừng ấy.
     test('ảnh chụp VẪN nhân contentScaleFactor — hai chỗ, hai đơn vị', () {
       expect(
-        _withoutComments(
-          _swiftMethodBody(sessionSource, 'func captureFrame('),
-        ),
+        _withoutComments(_swiftMethodBody(sessionSource, 'func captureFrame(')),
         contains('contentScaleFactor'),
         reason:
             'Cỡ ảnh là cỡ khung ngắm (point) NHÂN hệ số điểm ảnh. Đây là phép '
@@ -1243,7 +1416,9 @@ void main() {
             'những góc ngắm mà người ta hay đứng.',
       );
       expect(
-        'diffuse.contents'.allMatches(_withoutComments(sessionSource)).length,
+        'diffuse.contents = UIColor'
+            .allMatches(_withoutComments(sessionSource))
+            .length,
         1,
         reason:
             'MỘT màu mực cho cả hai hình, và đó là một lựa chọn có lý do. Đổi '
@@ -1252,7 +1427,11 @@ void main() {
             'mức tin cậy; màu là thứ đầu tiên mất đi với người mù màu và trong '
             'một tấm ảnh in đen trắng; và hai chấm đặc khác màu thì phải nhìn '
             'thấy CẢ HAI cạnh nhau mới so được, còn rỗng-hay-đặc thì đọc được '
-            'trên từng đầu một.',
+            'trên từng đầu một.\n\n'
+            'Đếm theo `= UIColor` chứ không theo `diffuse.contents` trơn: từ '
+            '0.12.0 tấm ảnh dán cũng ghi vào `diffuse.contents`, nhưng nó gán '
+            'một TẤM ẢNH của app chứ không gán một màu mực — hai việc khác '
+            'nhau, và luật "một màu mực" chỉ nói về vế sau.',
       );
       expect(
         sessionSource,
@@ -2164,7 +2343,8 @@ void main() {
           r'status == \.ready \|\| status == \.firstPointPlaced',
         ).allMatches(sach.replaceFirst(khaiBao, '')),
         isEmpty,
-        reason: 'còn một lời gác trạng thái viết tay ngoài `reticleIsMeaningful`',
+        reason:
+            'còn một lời gác trạng thái viết tay ngoài `reticleIsMeaningful`',
       );
 
       expect(
@@ -2347,7 +2527,9 @@ void main() {
       }
 
       expect(
-        _withoutComments(_swiftMethodBody(sessionSource, 'private func clearAnchors(')),
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func clearAnchors('),
+        ),
         contains('drag = nil'),
         reason:
             'Bỏ hết điểm thì cái đang nắm không còn tồn tại. Ở đây KHÔNG chốt '

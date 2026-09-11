@@ -94,6 +94,20 @@ void main() {
     );
   });
 
+  // Lệnh `setLabel` đi đúng cái ranh giới ấy, và nó hỏng theo chiều CÂM NHẤT
+  // trong cả tệp này: một chuỗi lệch làm mọi lượt dán ảnh đọc ra `notReady`
+  // trong khi tấm ảnh đã nằm trên đoạn thẳng rồi. App tin lời ấy sẽ gửi lại,
+  // mỗi khung hình, mãi mãi — và thứ duy nhất lộ ra là hoá đơn pin.
+  test('ba chuỗi kết quả dán ảnh khớp từng chữ giữa Swift và Dart', () {
+    expect(
+      _swiftStringEnumCases(swift, 'ArMeasureLabelResult'),
+      ArMeasureLabelResult.values.map((e) => e.name).toList(),
+      reason:
+          'enum ArMeasureLabelResult bên Swift và bên Dart đã lệch — mọi lượt '
+          'dán ảnh rơi về notReady, kể cả lúc ảnh đã nằm trên đoạn',
+    );
+  });
+
   test('hai chuỗi phương của mặt phẳng khớp từng chữ giữa Swift và Dart', () {
     expect(
       _swiftStringEnumCases(swift, 'ArPlaneAlignment'),

@@ -136,6 +136,21 @@ enum ArMeasureReleaseResult: String {
   case notReady
 }
 
+/// Kết quả một lượt dán ảnh lên đoạn thẳng.
+///
+/// `badImage` tách khỏi `notReady` vì hai chuyện khác nhau hẳn về chỗ phải sửa:
+/// `notReady` là không có phiên nào (kênh chết, view đã chết), còn `badImage` là
+/// phiên còn sống và tấm ảnh app gửi xuống KHÔNG giải mã được. Gộp chúng là để
+/// một lỗi dựng ảnh bên Dart đội lốt một lỗi vòng đời.
+///
+/// **Xoá nhãn (gửi `nil`) là `ok`**, không phải một lỗi: nó là một lệnh hợp lệ,
+/// và nó là đường app dùng khi phép đo kết thúc.
+enum ArMeasureLabelResult: String {
+  case ok
+  case notReady
+  case badImage
+}
+
 // MARK: - Chẩn đoán
 
 /// Tầng mục tiêu mà tia ĐÃ trúng — đọc thẳng từ `ARRaycastResult.target`.
@@ -476,15 +491,105 @@ final class ArMeasureNodes {
 
   private let line: SCNNode
 
+  /// Thứ tự vẽ của tấm ảnh dán, so với đoạn thẳng và hai đầu mút.
+  ///
+  /// **"Vẽ sau" một mình KHÔNG đủ ở 3D, và đây là chỗ giải nốt vế còn lại.**
+  /// Bất biến cũ — *đường kẻ không chạy xuyên viên* — nay phải giữ trong một
+  /// cảnh có chiều sâu, nơi thứ tự trên màn do bộ đệm sâu quyết chứ không do
+  /// thứ tự gọi vẽ. Hai vế phải đi cùng nhau:
+  ///
+  /// * mọi vật liệu ở đây **không đọc và không ghi bộ đệm sâu** (xem
+  ///   [makeMaterial]), nên bộ đệm sâu không còn tiếng nói nào;
+  /// * và khi ấy `renderingOrder` là thứ duy nhất còn quyết, nên nó phải đặt
+  ///   TƯỜNG MINH chứ không trông vào mặc định.
+  ///
+  /// Thiếu vế đầu thì tấm ảnh và đoạn thẳng nằm gần như cùng một độ sâu —
+  /// chúng cắt nhau ở đúng trung điểm — và cái vạch sáng chạy ngang tấm ảnh
+  /// nhấp nháy theo từng khung hình (z-fighting). Thiếu vế sau thì SceneKit
+  /// sắp xếp theo ý nó, và trên máy nó đúng cho tới cái ngày nó không.
+  private static let labelRenderingOrder = 10
+
+  /// Node CHA của tấm ảnh: giữ vị trí, hướng và cỡ.
+  ///
+  /// Tách làm hai tầng vì hình học và biến đổi có nhịp sống khác hẳn nhau: cỡ
+  /// và hướng đổi ở MỖI khung hình (`simdScale`, `simdOrientation` — vài phép
+  /// gán), còn hình học chỉ đổi khi app gửi xuống một tấm ảnh có tỉ lệ khác.
+  /// Gộp một tầng không sai, nhưng nó mời người sau đặt `plane.width` trong
+  /// vòng cập nhật — tức dựng lại `SCNGeometry` trên luồng vẽ mỗi khung.
+  private let labelPivot = SCNNode()
+  private let labelPlane: SCNNode
+
+  /// Cỡ tấm ảnh đang dán, đơn vị **POINT** (đã chia tỉ lệ điểm ảnh).
+  ///
+  /// `.zero` nghĩa là chưa có ảnh nào — xem [hasLabel].
+  private(set) var labelPointSize: CGSize = .zero
+
+  /// Có ảnh để dán hay không. Người gọi đọc nó trước khi bỏ công tính chỗ đứng.
+  var hasLabel: Bool { labelPointSize.width > 0 && labelPointSize.height > 0 }
+
   init() {
     dots = [Self.makeDot(), Self.makeDot()]
     rings = [Self.makeRing(), Self.makeRing()]
     line = Self.makeLine()
+    labelPlane = Self.makeLabelPlane()
     for node in dots + rings {
       root.addChildNode(node)
     }
     root.addChildNode(line)
+    labelPivot.addChildNode(labelPlane)
+    labelPivot.isHidden = true
+    root.addChildNode(labelPivot)
     update(points: [], live: nil)
+  }
+
+  // MARK: - Tấm ảnh dán trên đoạn
+
+  /// Nhận tấm ảnh app vừa dựng, hoặc `nil` để gỡ nó.
+  ///
+  /// **Gói không biết trên ảnh viết gì.** Nó nhận một `UIImage` đã mang sẵn tỉ
+  /// lệ điểm ảnh (nên `image.size` đã là POINT) và dán nguyên xi. Mọi phông
+  /// chữ, màu, bo góc và câu chữ nằm ở app — đó là ranh giới của kho này, và nó
+  /// không phải chuyện tiện tay: hệ thiết kế, tệp phông và mọi khái niệm sản
+  /// phẩm đều ở bên kia.
+  ///
+  /// Hình học chỉ dựng lại khi **tỉ lệ** ảnh đổi, không phải mỗi lượt gửi: con
+  /// số đo trôi liên tục nên app gửi ảnh mới nhiều lần mỗi giây, mà bề ngang
+  /// tấm ảnh thì chỉ đổi khi số chữ đổi.
+  func setLabel(image: UIImage?) {
+    guard let image, image.size.width > 0, image.size.height > 0 else {
+      labelPointSize = .zero
+      labelPivot.isHidden = true
+      labelPlane.geometry?.firstMaterial?.diffuse.contents = nil
+      return
+    }
+
+    labelPointSize = image.size
+    if let plane = labelPlane.geometry as? SCNPlane {
+      // Cao ĐÚNG 1 đơn vị, rộng theo tỉ lệ ảnh: cỡ thật đặt bằng `simdScale`
+      // ở [placeLabel], nên hình học không phải biết gì về khoảng cách.
+      let aspect = CGFloat(image.size.width / image.size.height)
+      if abs(plane.width - aspect) > 1e-4 {
+        plane.width = aspect
+      }
+      plane.firstMaterial?.diffuse.contents = image
+    }
+  }
+
+  /// Đặt tấm ảnh vào chỗ. [scale] là chiều DỰNG của nó trong không gian thật,
+  /// tính bằng mét — xem `LabelPlacement.worldHeight`.
+  func placeLabel(position: SIMD3<Float>, orientation: simd_quatf, scale: Float) {
+    guard hasLabel, scale.isFinite, scale > 0 else {
+      labelPivot.isHidden = true
+      return
+    }
+    labelPivot.simdPosition = position
+    labelPivot.simdOrientation = orientation
+    labelPivot.simdScale = SIMD3<Float>(repeating: scale)
+    labelPivot.isHidden = false
+  }
+
+  func hideLabel() {
+    labelPivot.isHidden = true
   }
 
   /// Đặt lại hình theo các điểm đang có — không điểm nào, một, hoặc hai — cộng
@@ -534,6 +639,10 @@ final class ArMeasureNodes {
 
     guard let (a, b) = ends else {
       line.isHidden = true
+      // Tấm ảnh chú thích ĐOẠN, nên không có đoạn thì không có gì để chú thích.
+      // Ẩn ở đây chứ không để người gọi nhớ: lối ra sớm này là chỗ duy nhất mà
+      // "vừa còn đoạn, nay hết" đi qua.
+      hideLabel()
       return
     }
 
@@ -628,6 +737,54 @@ final class ArMeasureNodes {
     cylinder.radialSegmentCount = 12
     cylinder.firstMaterial = makeMaterial()
     return SCNNode(geometry: cylinder)
+  }
+
+  /// Tấm phẳng mang ảnh: cao 1 đơn vị, rộng theo tỉ lệ ảnh.
+  ///
+  /// `SCNPlane` nằm trong mặt X–Y của node với pháp tuyến `+Z`, tâm ở gốc —
+  /// đúng hệ mà `LabelPlacement.basis` dựng ra.
+  private static func makeLabelPlane() -> SCNNode {
+    let plane = SCNPlane(width: 1, height: 1)
+    plane.cornerRadius = 0
+    plane.firstMaterial = makeLabelMaterial()
+
+    let node = SCNNode(geometry: plane)
+    node.renderingOrder = labelRenderingOrder
+    return node
+  }
+
+  /// Vật liệu của tấm ảnh.
+  ///
+  /// Dựng riêng chứ không dùng chung [makeMaterial], vì bốn chỗ khác nhau — và
+  /// mỗi chỗ chữa một hỏng CÂM:
+  ///
+  /// * **`diffuse.contents` là tấm ảnh**, không phải một màu. Cùng
+  ///   `lightingModel = .constant` với phần còn lại, và cùng lý do: cảnh này
+  ///   KHÔNG có đèn nào, nên một vật liệu cần đèn ra màu đen tuyền trên nền
+  ///   camera.
+  /// * **`wrapS`/`wrapT` = `.clamp`.** Mặc định của SceneKit là `.repeat`, và
+  ///   với một tấm ảnh bo góc (tức có alpha ở bốn góc) thì mép đối diện chảy
+  ///   ngược vào trong ở hàng điểm ảnh ngoài cùng — một viền mờ chỉ thấy khi
+  ///   soi kỹ, và không lỗi nào nổ.
+  /// * **`isDoubleSided`.** Phép lật là nửa vòng quanh PHÁP TUYẾN nên mặt trước
+  ///   vẫn luôn quay về camera, và về lý thuyết một mặt là đủ. Hai mặt là lưới
+  ///   an toàn cho đúng cái khung hình mà `basis` rơi vào nhánh suy biến: mất
+  ///   một khung hình có chữ còn hơn mất một khung hình trống trơn.
+  /// * **`readsFromDepthBuffer`/`writesToDepthBuffer` tắt**, y như hình đo —
+  ///   xem [labelRenderingOrder] về vì sao hai cờ ấy và thứ tự vẽ là MỘT luật
+  ///   chứ không phải hai.
+  private static func makeLabelMaterial() -> SCNMaterial {
+    let material = SCNMaterial()
+    material.lightingModel = .constant
+    material.isDoubleSided = true
+    material.diffuse.wrapS = .clamp
+    material.diffuse.wrapT = .clamp
+    material.diffuse.magnificationFilter = .linear
+    material.diffuse.minificationFilter = .linear
+    material.diffuse.mipFilter = .linear
+    material.readsFromDepthBuffer = false
+    material.writesToDepthBuffer = false
+    return material
   }
 
   private static func makeMaterial() -> SCNMaterial {
@@ -1058,6 +1215,30 @@ final class ArMeasureSession: NSObject {
 
   /// Mốc lần bắn lớp phủ gần nhất, để giãn nhịp 30 Hz.
   private var lastOverlayEmitAt: TimeInterval = 0
+
+  /// Tấm ảnh dán có đang LẬT nửa vòng hay không.
+  ///
+  /// Chỗ NHỚ duy nhất của luật trễ ở `LabelPlacement.isFlipped` — hàm ấy thuần,
+  /// và trạng thái đi vào rồi đi ra bằng tham số. Một biến nhớ chôn trong hàm
+  /// biến nó thành thứ không kiểm được bằng `swiftc`.
+  private var labelFlipped = false
+
+  /// Quãng dò để ĐO phép chiếu quanh trung điểm, mét.
+  ///
+  /// Hai điểm cách trung điểm đúng quãng này theo trục X và trục Y của tấm ảnh,
+  /// chiếu xuống màn, cho ra hai thứ không suy được từ đâu khác: **góc màn** của
+  /// trục X (đầu vào của phép lật) và **số point mỗi mét** ở đúng khoảng cách ấy
+  /// (mẫu số của luật cỡ).
+  ///
+  /// Đo bằng chính `projectPoint` chứ không suy từ trường nhìn và cỡ khung ngắm:
+  /// phép chiếu của view đã gánh sẵn hướng giao diện và tỉ lệ khung, và nó là
+  /// con số duy nhất trong tệp này đã được đối chiếu với máy thật (xem
+  /// [projectToScreen]). Một công thức dựng tay từ `projectionTransform` phải
+  /// đoán lại cả hai thứ ấy, và đoán sai thì chữ lộn ngược ở một hướng cầm máy.
+  ///
+  /// Hai centimét: ở 3 m nó còn tách ra vài point — đủ để góc và độ dài đọc
+  /// được — còn ở cự ly gần thì nó vẫn đủ ngắn để phép chiếu chưa kịp cong.
+  private static let labelProbeMetres: Float = 0.02
 
   /// Khuôn hình ARKit đang CHẠY, đã sẵn sàng cho kênh. `nil` là chưa `run` lần
   /// nào. Xem [makeConfiguration] và [runSession].
@@ -1743,6 +1924,35 @@ final class ArMeasureSession: NSObject {
   /// Kênh sự kiện gắn sau khi platform view đã dựng xong, nên không có dòng này
   /// thì màn đứng trắng cho tới lần ARKit đổi trạng thái kế tiếp — có thể là
   /// vài giây.
+  /// Dán một tấm ảnh lên đoạn thẳng, hoặc gỡ nó ra khi [png] là `nil`.
+  ///
+  /// **Gói không biết trên ảnh viết gì**, và đó là ranh giới của kho này chứ
+  /// không phải một chỗ chưa làm xong: hệ thiết kế, tệp phông và mọi khái niệm
+  /// sản phẩm nằm ở app. Gói nhận một tấm ảnh cùng tỉ lệ điểm ảnh của nó, rồi
+  /// dán lên một node nằm giữa đoạn — xem `LabelPlacement`.
+  ///
+  /// [pixelRatio] là số điểm ảnh trên một point của tấm ảnh (2 hay 3 trên máy
+  /// Retina). Nó vào thẳng `UIImage(data:scale:)`, nên `image.size` sau đó đã là
+  /// POINT — và cỡ point mới là thứ luật cỡ nói chuyện. Truyền 1 cho một ảnh
+  /// `@3x` là dán một tấm ảnh to gấp ba trên màn.
+  ///
+  /// Không bao giờ ném. Ảnh không giải mã được thì nhãn ĐANG CÓ còn nguyên —
+  /// gỡ nó là để một lỗi dựng ảnh nhất thời xoá mất con số trên màn.
+  func setLabel(png: Data?, pixelRatio: Double) -> ArMeasureLabelResult {
+    guard !isStopped else { return .notReady }
+
+    guard let png, !png.isEmpty else {
+      measureNodes.setLabel(image: nil)
+      return .ok
+    }
+
+    let scale = pixelRatio.isFinite && pixelRatio > 0 ? CGFloat(pixelRatio) : 1
+    guard let image = UIImage(data: png, scale: scale) else { return .badImage }
+
+    measureNodes.setLabel(image: image)
+    return .ok
+  }
+
   func replayLastSample() {
     guard !isStopped else { return }
     if let sample = lastSample {
@@ -2661,6 +2871,12 @@ final class ArMeasureSession: NSObject {
     let a = placed.first?.position
     let b = placed.count >= 2 ? placed[1].position : live
 
+    // Tấm ảnh dán đi CHUNG lượt này với hình vẽ và khung lớp phủ, cùng lẽ với
+    // hai thứ kia: nó là một node trong cùng cảnh ấy, và bốn trường nó bắn lên
+    // Dart nói về CHÍNH cái node vừa được đặt — không phải một phép tính thứ hai
+    // chạy sau ở tầng khác.
+    for (key, value) in refreshLabel(a: a, b: b) { frame[key] = value }
+
     if let a, let projected = projectToScreen(a) {
       frame["ax"] = Double(projected.x)
       frame["ay"] = Double(projected.y)
@@ -2695,6 +2911,103 @@ final class ArMeasureSession: NSObject {
     lastOverlayEmitAt = now
     lastOverlayFrame = frame
     output?.arMeasureSession(self, didProduceOverlay: frame)
+  }
+
+  /// Đặt tấm ảnh dán vào chỗ, và trả về bốn trường nói ra chỗ nó ĐÃ đứng.
+  ///
+  /// **Vì sao tấm ảnh phải là một node chứ không phải một lớp vẽ ở Flutter.**
+  /// Đoạn thẳng và hai chấm dính vào THẾ GIỚI: dựng một lần, rồi ARKit cập nhật
+  /// tư thế camera mỗi khung. Một con số vẽ lại từ toạ độ đã chiếu — ở tầng
+  /// khác, theo nhịp khác (kênh lớp phủ 30 Hz so với SceneKit 60 Hz) — GIẬT so
+  /// với chính đoạn thẳng nó nằm trên, không bao giờ là một phần của đoạn, và
+  /// biến mất khi một đầu rơi ra sau lưng camera trong khi SceneKit vẫn vẽ phần
+  /// đoạn còn trong khối nhìn. Ba triệu chứng, một lỗi kiến trúc.
+  ///
+  /// **Bốn trường trả về là để ẢNH CHỤP dựng lại đúng hình ấy.** `captureFrame`
+  /// trả một khung THUẦN, nên app phải vẽ lại đoạn, hai chấm và con số bằng
+  /// canvas của nó. Không có bốn trường này thì app phải tự chiếu trung điểm và
+  /// tự đoán góc — tức dựng lại chính cái tầng vừa bị bỏ, và hai phép tính chép
+  /// tay lệch nhau thì tấm ảnh mang một con số ở chỗ khác thứ người dùng vừa
+  /// nhìn.
+  ///
+  /// Trả về rỗng nghĩa là **không có nhãn trên màn**: chưa có ảnh nào, chưa có
+  /// đoạn nào, hay trung điểm nằm ngoài khối nhìn. Node cũng bị ẩn ở đúng những
+  /// đường ấy — không để lại một transform cũ chờ hiện ra sai chỗ.
+  private func refreshLabel(a: SIMD3<Float>?, b: SIMD3<Float>?) -> [String: Any] {
+    guard measureNodes.hasLabel,
+      let a, let b,
+      let camera = sceneView.pointOfView?.simdWorldPosition
+    else {
+      measureNodes.hideLabel()
+      return [:]
+    }
+
+    let midpoint = (a + b) / 2
+    let segment = b - a
+    let toCamera = camera - midpoint
+
+    // Hệ trục CHƯA lật, dựng trước: phép lật đọc góc MÀN của chính trục X, nên
+    // phải có một trục X để chiếu đã. Dựng lại hệ trục sau khi biết cờ lật rẻ
+    // hơn hẳn việc đoán ngược — đây là vài phép nhân vô hướng.
+    let plain = LabelPlacement.basis(
+      segment: segment, toCamera: toCamera, flipped: false)
+
+    let probe = Self.labelProbeMetres
+    guard let centre = projectToScreen(midpoint),
+      let alongX = projectToScreen(midpoint + plain.x * probe),
+      let alongY = projectToScreen(midpoint + plain.y * probe)
+    else {
+      measureNodes.hideLabel()
+      return [:]
+    }
+
+    let deltaX = SIMD2<Double>(
+      Double(alongX.x - centre.x), Double(alongX.y - centre.y))
+    labelFlipped = LabelPlacement.isFlipped(
+      screenDelta: deltaX, wasFlipped: labelFlipped)
+
+    let basis =
+      labelFlipped
+      ? LabelPlacement.basis(segment: segment, toCamera: toCamera, flipped: true)
+      : plain
+
+    // Số POINT mỗi mét ở đúng khoảng cách này, ĐO chứ không suy — xem
+    // [labelProbeMetres].
+    let deltaY = SIMD2<Double>(
+      Double(alongY.x - centre.x), Double(alongY.y - centre.y))
+    let pointsPerMetre = simd_length(deltaY) / Double(probe)
+
+    let distance = Double(simd_distance(camera, midpoint))
+    let height = LabelPlacement.worldHeight(
+      pointHeight: Double(measureNodes.labelPointSize.height),
+      pointsPerMetre: pointsPerMetre,
+      distanceMetres: distance)
+    guard height > 0 else {
+      measureNodes.hideLabel()
+      return [:]
+    }
+
+    measureNodes.placeLabel(
+      position: midpoint,
+      orientation: LabelPlacement.orientation(basis),
+      scale: Float(height))
+
+    // Góc MÀN của trục X ĐÃ lật, độ, cùng chiều với `Canvas.rotate` của Flutter
+    // (trục y đi xuống, dương theo chiều kim đồng hồ). Cộng nửa vòng chứ không
+    // chiếu lại trục X đã lật: hai phép ấy cho cùng một số, và phép sau tốn
+    // thêm một lượt `projectPoint` mỗi khung hình.
+    var rotation = atan2(deltaX.y, deltaX.x) * 180 / Double.pi
+    if labelFlipped { rotation += 180 }
+    rotation = rotation.truncatingRemainder(dividingBy: 360)
+    if rotation > 180 { rotation -= 360 }
+    if rotation <= -180 { rotation += 360 }
+
+    return [
+      "lx": Double(centre.x),
+      "ly": Double(centre.y),
+      "lrot": rotation,
+      "lscale": LabelPlacement.screenScale(distanceMetres: distance),
+    ]
   }
 
   /// Phát lại khung lớp phủ gần nhất cho một người nghe vừa gắn vào.

@@ -151,6 +151,20 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       // thái CỦA MỘT PHIÊN.
       result((session(for: call)?.releasePoint() ?? .notReady).rawValue)
 
+    case "setLabel":
+      // Giá trị canh gác là `.notReady`: không tìm thấy view nghĩa là không có
+      // phiên nào, và `.badImage` là một câu về TẤM ẢNH — nói nó ở đây là đổ
+      // lỗi cho dữ liệu của app vì một chuyện của vòng đời.
+      //
+      // `png` KHÔNG bắt buộc: thiếu nó (hay `nil`) là lệnh GỠ nhãn, một lệnh
+      // hợp lệ. Nên không có `guard` nào ở đây, khác hẳn `index` của `movePoint`.
+      let labelArgs = call.arguments as? [String: Any]
+      let png = (labelArgs?["png"] as? FlutterStandardTypedData)?.data
+      let pixelRatio = (labelArgs?["pixelRatio"] as? NSNumber)?.doubleValue ?? 1
+      result(
+        (session(for: call)?.setLabel(png: png, pixelRatio: pixelRatio) ?? .notReady)
+          .rawValue)
+
     case "undoPoint":
       session(for: call)?.undoPoint()
       result(nil)

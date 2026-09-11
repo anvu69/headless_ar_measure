@@ -521,14 +521,54 @@ Every field is nullable on purpose. No camera frame, a value ARKit adds in a
 later iOS, an older native build — all of it comes back `null` rather than a
 plausible default, because a plausible default here is manufactured evidence.
 
+### The measurement label lives in the scene
+
+```dart
+final png = await drawYourLabel();           // your fonts, your colours
+await controller.setLabel(ArLabelImage(
+  png: png,
+  pixelRatio: MediaQuery.devicePixelRatioOf(context),
+));
+```
+
+The package sticks that image on a node centred on the segment. It does not know
+what the image says — the design system, the font file and every product concept
+stay in your app.
+
+Why it cannot be a Flutter overlay: the line and the dots are nodes in the
+SceneKit scene, so ARKit moves them with the camera every frame. A number drawn
+from projected coordinates runs on a different clock (the overlay channel is
+capped at 30 Hz, SceneKit renders at 60) — it stutters against the line it sits
+on, it is never part of that line, and it vanishes when one endpoint falls
+behind the camera while SceneKit keeps drawing the rest of the segment.
+
+The node turns about the segment's own axis to face you, flips half a turn
+before the text would read upside down (with ±8° of hysteresis, or the text
+jumps in a shaking hand), and holds a constant size on screen between **0.30 m
+and 3.00 m**, falling off as `clamp / distance` outside that band. Nothing reads
+or writes the depth buffer, and `renderingOrder` puts the label over the line —
+in 3D, "drawn later" alone is not enough.
+
+Pass `null` to take it off.
+
+`ArMeasureOverlay.label` reports where the node ended up — centre, screen
+rotation (flip included), scale — so a composed photo can redraw it in the same
+place. It is a statement, not a request.
+
 ### A captured frame is bare on purpose
 
 `captureFrame()` writes the current camera frame — and nothing else — to a JPEG
 in the temp directory. No dots, no segment, no coaching card. `ARSCNView`
 does have a `snapshot()`, and it would have been one line; it returns what is
 on screen, which includes Apple's coaching overlay, and it does not include the
-one thing a person keeps a photo for: the number. Your app already draws that
-number in Flutter. Compose on a bare frame and it is drawn once.
+one thing a person keeps a photo for: the number. Compose on a bare frame and
+everything is drawn once.
+
+Note the asymmetry with `setLabel`: on **screen** the number is a node in the
+scene, because that is the only way it can stick to the line. In a **photo**
+there is no scene to stick to, so your app redraws it on a canvas — using
+`ArMeasureOverlay.label` so it lands exactly where it was. Two drawing paths for
+one label, for two different reasons; neither is a leftover.
 
 Two properties make composing possible at all:
 

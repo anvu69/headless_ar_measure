@@ -1,3 +1,115 @@
+## 0.12.0
+
+The measurement label moves **into the scene**. One new command,
+`setLabel(ArLabelImage?)`: your app draws the label as an image, the package
+sticks it on a node between the two points.
+
+### Three symptoms, one architectural bug
+
+From a real device, measuring with the label drawn as a Flutter overlay:
+
+> the pill with the measurement has to be drawn **along the AR line**. When you
+> draw it separately like that, moving the camera makes that pill **very jittery
+> because it has to be re-rendered continuously against the screen**. Continuous
+> re-rendering is **not how AR builds an image**. However the line and the
+> endpoint circles are made, the measurement pill has to be made the same way.
+
+That diagnosis is right, and it points at an architecture, not a layout.
+
+The line and the two dots are **nodes in the SceneKit scene**: built once, then
+ARKit updates the camera pose every frame. They stick to the world.
+
+A number drawn by Flutter from projected coordinates is a different drawing
+system on a different clock — the overlay channel is capped at 30 Hz, SceneKit
+renders at 60. Three consequences, all of them visible on device:
+
+* it **stutters** against the line, because the two update on different clocks;
+* it is **never part of** the line, because it belongs to another layer;
+* it **disappears** when one endpoint falls behind the camera, because the
+  projection loses its input — while SceneKit keeps drawing the part of the
+  segment still inside the frustum.
+
+Three rounds of patching went at one symptom each. The fix is to move the label
+into the scene.
+
+### The package does not know what the label says
+
+The split is deliberate, and it is the same boundary this package has kept from
+the start:
+
+| job | where | why |
+|---|---|---|
+| draw the label as an **image** (font, colour, corner radius, ink-band centring) | **app** | the design system, the font file and every product concept live there |
+| stick that image on a node, centre it on the segment, turn it | **package** | only the package has the scene and the camera pose each frame |
+
+`setLabel` takes a PNG and a pixel ratio. PNG rather than raw RGBA is a
+robustness choice, not a speed one: a raw byte array has to carry width, height,
+channel order and whether alpha is premultiplied — four conventions, four places
+for the two ends to disagree without anything failing loudly, because an image
+off by one channel still looks like an image. PNG carries all four, and
+`UIImage(data:)` reads it without being told.
+
+### How the node behaves
+
+* **On the segment.** Centre at the midpoint, and the plane of the label
+  contains the segment.
+* **Turned toward the camera about the segment's own axis** — readable from any
+  side, like the number on a real tape measure that you turn to face you. The
+  normal is the part of the camera vector left after removing the component
+  along the segment; taking the camera vector whole would be a three-axis
+  billboard, and then the label stops lying along the line.
+* **The text never reads upside down.** The package flips it half a turn when
+  it would, and **the flip has hysteresis** — ±8°. A single threshold at exactly
+  90° means the two sides are a thousandth of a degree apart, and a human hand
+  shakes right across it: the label flips back and forth and **the text jumps**.
+  The flip is half a turn about the **normal**, not about the segment: turning
+  about the segment also puts the text upright, and it turns the label's back to
+  the camera.
+* **Near-constant size on screen, clamped.** Between **0.30 m and 3.00 m** the
+  label is exactly the point size you sent. Outside that band the *world* size
+  stops changing, so the screen size falls off as `clamp / distance` — half size
+  at 6 m, double at 0.15 m. Both ends earn their clamp: with no far clamp the
+  label is over a metre wide at 10 m and goes through the wall it is annotating;
+  with no near clamp a fixed screen size swallows the very thing you came close
+  to measure, because you come close to measure something *small*. Practical
+  readable range is roughly **0.2 m to 5 m**; past that the number belongs in
+  your own UI, not on the segment.
+* **The line does not run through it.** In 3D "drawn later" is not enough on its
+  own — depth decides. So both halves of the rule are explicit: every material
+  here reads and writes **no** depth buffer, which leaves `renderingOrder` as
+  the only thing that decides, and that is set explicitly rather than defaulted.
+
+### The overlay frame says where the label ended up
+
+`ArMeasureOverlay.label` carries the label's centre, screen rotation and scale.
+It is a **statement, not a request** — the node has already been placed; these
+three numbers only say where.
+
+They exist for one caller: `captureFrame()` returns a **bare** frame, so an app
+composing a photo has to redraw the segment, the dots and the number on its own
+canvas. Without them the app would have to project the midpoint and guess the
+angle — rebuilding exactly the layer this release removes, and two hand-copied
+computations drift, so the photo would carry the number somewhere other than
+where the person just saw it.
+
+The rotation includes the flip, and that is why it has to travel: the flip
+depends on history, so it cannot be recomputed from a single frame.
+
+### The maths has its own test
+
+`LabelPlacement.swift` imports only `Foundation` and `simd`, like
+`PlaneOvershoot.swift` and `VideoFormatChoice.swift` before it — so `swiftc`
+compiles and runs it on macOS and the three numeric laws (hysteresis, size,
+basis) have real tests instead of tests that read the source as text.
+
+What those tests bite on, proven by mutation: dropping the hysteresis, forgetting
+the perspective denominator in the size law, and flipping about the wrong axis
+each turn at least one case red.
+
+**Feel is not tested and cannot be.** Whether it looks smooth or jittery on a
+moving camera is a device question. The tests cover the laws; the device covers
+the feel.
+
 ## 0.11.0
 
 Two new commands: `grabPoint(index)` and `releasePoint()`. Between them the
