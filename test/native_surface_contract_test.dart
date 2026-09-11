@@ -1408,22 +1408,23 @@ void main() {
     test('định danh chỉ ghi ở một lượt BẮN TIA — không đường nào viết lại', () {
       final khongChuThich = _withoutComments(sessionSource);
 
-      // Đúng HAI đường ghi, và cả hai là một cú chạm của người dùng kèm một
-      // lượt raycast mới: `placePoint` (chấm) và `movePoint` (dời). Đường thứ
-      // ba ở bất cứ đâu là một lượt viết lại định danh mà KHÔNG có tia nào đứng
-      // sau — tức là một phép đoán, mà đó chính là quyết định gói đã bác: ARKit
-      // GỘP mặt phẳng và không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO,
-      // nên một cú đoán sai in ra đúng chữ "cùng mặt phẳng".
+      // Đúng HAI đường ghi, và cả hai đứng sau một lượt raycast mới:
+      // `placePoint` (chấm), và `replacePoint` — chỗ chốt điểm dùng chung cho
+      // một nhát `movePoint` lẫn cú buông ở cuối một quãng kéo. Đường thứ ba ở
+      // bất cứ đâu là một lượt viết lại định danh mà KHÔNG có tia nào đứng sau
+      // — tức là một phép đoán, mà đó chính là quyết định gói đã bác: ARKit GỘP
+      // mặt phẳng và không nói mặt phẳng bị nuốt đã nhập vào mặt phẳng NÀO, nên
+      // một cú đoán sai in ra đúng chữ "cùng mặt phẳng".
       final luotGhi = RegExp(
         r'pointDiagnostics\[[^\]]+\]\s*=',
       ).allMatches(khongChuThich).length;
-      expect(luotGhi, 2, reason: 'chỉ `placePoint` và `movePoint` được ghi');
+      expect(luotGhi, 2, reason: 'chỉ `placePoint` và `replacePoint` được ghi');
 
-      for (final ten in ['func placePoint()', 'func movePoint(at index: Int)']) {
+      for (final ten in ['func placePoint()', 'private func replacePoint(']) {
         expect(
           _withoutComments(_swiftMethodBody(sessionSource, ten)),
           contains('pointDiagnostics['),
-          reason: '`$ten` phải tự ghi lai lịch của lượt bắn nó vừa làm',
+          reason: '`$ten` phải ghi lai lịch của đúng lượt bắn đứng sau nó',
         );
       }
 
@@ -1592,6 +1593,7 @@ void main() {
           'if !force, status == lastStatus, '
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
+          'grabbedPointIndex == lastGrabbedPointIndex, '
           'aimOvershootMm == lastAimOvershootMm, '
           'aimRayAngleDeg == lastAimRayAngleDeg, '
           'aimPlaneId == lastAimPlaneId {',
@@ -1725,6 +1727,7 @@ void main() {
           'if !force, status == lastStatus, '
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
+          'grabbedPointIndex == lastGrabbedPointIndex, '
           'aimOvershootMm == lastAimOvershootMm, '
           'aimRayAngleDeg == lastAimRayAngleDeg, '
           'aimPlaneId == lastAimPlaneId {',
@@ -1913,21 +1916,35 @@ void main() {
             'phiên đang chạy hoàn toàn bình thường.',
       );
 
+      // Mọi phép đột biến đi qua ĐÚNG một lời gọi, và lời gọi ấy phải đứng SAU
+      // lời gác tia. Ba chữ dưới đây canh chiều ngược lại: không có phép đột
+      // biến nào viết thẳng trong thân hàm, ở bất cứ đâu — kể cả sau lời gác.
+      // Viết thẳng ở đó vẫn chạy đúng, nhưng nó dựng bản chép thứ hai của luật
+      // chốt điểm, và bản chép ấy trôi ra khỏi `replacePoint` trong im lặng.
       for (final dotBien in [
         'anchors[',
         'session.remove(',
         'pointDiagnostics',
       ]) {
-        final viTri = than.indexOf(dotBien);
         expect(
-          viTri,
-          greaterThan(banTia),
+          than,
+          isNot(contains(dotBien)),
           reason:
-              '`$dotBien` nằm TRƯỚC lời gác tia. Một lượt trượt ở đó đã kịp phá '
-              'điểm cũ, và người dùng mất một đầu họ chấm đúng để đổi lấy một '
-              'lượt dời không xảy ra. Dời hụt phải là một phép rỗng.',
+              '`$dotBien` viết thẳng trong `movePoint`. Mọi phép đột biến phải '
+              'đi qua `replacePoint(at:with:diagnostics:)`, chỗ duy nhất chốt '
+              'một điểm — cùng chỗ mà cú buông ở cuối một quãng kéo dùng.',
         );
       }
+
+      final chot = than.indexOf('replacePoint(');
+      expect(
+        chot,
+        greaterThan(banTia),
+        reason:
+            'Lời chốt nằm TRƯỚC lời gác tia. Một lượt trượt ở đó đã kịp phá '
+            'điểm cũ, và người dùng mất một đầu họ chấm đúng để đổi lấy một '
+            'lượt dời không xảy ra. Dời hụt phải là một phép rỗng.',
+      );
     });
 
     /// Ca số hai: **lai lịch của điểm sau khi dời là lai lịch MỚI**.
@@ -1950,7 +1967,9 @@ void main() {
             'khỏi.',
       );
       expect(
-        than,
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func replacePoint('),
+        ),
         contains('pointDiagnostics.removeValue(forKey:'),
         reason:
             'Khối chẩn đoán khoá theo `identifier` của anchor, và anchor cũ bị '
@@ -1962,12 +1981,17 @@ void main() {
       // viết sai trông tự nhiên nhất — "giữ lại lai lịch cho khỏi mất" — và nó
       // dựng ra đúng cảnh hỏng: một điểm nằm trên tường, khai mình ở trên mặt
       // bàn.
+      //
+      // Hai vế được nhận, và chỉ hai: một phép đo mới tại chỗ
+      // (`makeDiagnostics(for:)`, đường của `placePoint`), hoặc tham số
+      // `diagnostics` của `replacePoint` — mà ca "buông chốt lai lịch của chỗ
+      // CUỐI" đã truy tiếp tới nguồn của nó.
       for (final chep in RegExp(
         r'pointDiagnostics\[[^\]]+\]\s*=\s*([^\n]+)',
       ).allMatches(_withoutComments(sessionSource))) {
         expect(
           chep.group(1),
-          startsWith('makeDiagnostics(for:'),
+          anyOf(startsWith('makeDiagnostics(for:'), equals('diagnostics')),
           reason:
               'Mọi lượt ghi vào khối chẩn đoán phải là một PHÉP ĐO mới. Chép '
               'một khối cũ sang khoá mới là dựng lại lai lịch của một cú bấm '
@@ -2056,7 +2080,7 @@ void main() {
 
     test('điểm mới là một ARAnchor MỚI, và anchor cũ được gỡ khỏi phiên', () {
       final than = _withoutComments(
-        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+        _swiftMethodBody(sessionSource, 'private func replacePoint('),
       );
 
       expect(
@@ -2071,9 +2095,11 @@ void main() {
         than,
         contains('transform: hit.result.worldTransform'),
         reason:
-            'Anchor mới dựng từ lượt trúng NÀY. Dựng từ bất cứ toạ độ nào khác '
+            'Anchor mới dựng từ một lượt TRÚNG. Dựng từ bất cứ toạ độ nào khác '
             '— một điểm đã làm mượt, một transform cũ — là dời điểm tới một chỗ '
-            'không phải chỗ người dùng đang chỉ.',
+            'không phải chỗ người dùng đang chỉ. Ở cú buông thì lượt trúng ấy là '
+            'lượt CUỐI của quãng kéo, không phải vệt đã làm mượt mà mắt vừa '
+            'nhìn theo.',
       );
       expect(
         than,
@@ -2083,8 +2109,12 @@ void main() {
             'dời. Nó không vẽ gì (node bị chặn), nên nó tích lại im lặng.',
       );
       expect(than, contains('sceneView.session.add(anchor:'));
+
+      final movePointBody = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func movePoint(at index: Int)'),
+      );
       expect(
-        than,
+        movePointBody,
         contains('publish(force: true)'),
         reason:
             'Số đo phải đổi NGAY ở cú chạm, không đợi nhịp 15 Hz hay đợi số đo '
@@ -2116,11 +2146,11 @@ void main() {
       );
       expect(
         RegExp(r'reticleIsMeaningful\(').allMatches(sach).length,
-        6,
+        7,
         reason:
-            'Một lần khai và NĂM chỗ gọi — lượt dò, hai lời gác cuối trong '
-            '`publish` (tầng ngắm và phép đếm vân), `placePoint`, `movePoint`. '
-            'Năm bản chép lệch nhau thì tâm ngắm khoá trong khi '
+            'Một lần khai và SÁU chỗ gọi — lượt dò, hai lời gác cuối trong '
+            '`publish` (tầng ngắm và phép đếm vân), `placePoint`, `movePoint`, '
+            '`grabPoint`. Sáu bản chép lệch nhau thì tâm ngắm khoá trong khi '
             'lệnh dời trả `notReady`, hoặc ngược lại: lệnh chạy được trong khi '
             'tâm ngắm nói không có gì để bấm. Cả hai chiều đều là một cái nút '
             'nói dối, và không lỗi nào nổ.',
@@ -2145,6 +2175,223 @@ void main() {
             '`measured`. Câu ấy nay sai, và một câu sai trong tài liệu của '
             'chính trường ấy là chỗ người đọc tin trước tiên.',
       );
+    });
+  });
+
+  group('nắm và kéo một đầu mút', () {
+    test('hai lệnh khớp từng chữ giữa Swift và Dart', () {
+      expect(pluginSource, contains('case "grabPoint":'));
+      expect(pluginSource, contains('case "releasePoint":'));
+      expect(dartSource, contains("invokeMethod<String>('grabPoint'"));
+      expect(dartSource, contains("invokeMethod<String>('releasePoint'"));
+    });
+
+    // Đây là luật đắt nhất của cả lượt, và nó KHÔNG có triệu chứng nào ngoài
+    // hoá đơn pin: một quãng nắm cài bằng cách app gọi `movePoint` 30 lần mỗi
+    // giây vẫn cho ra đúng hình ấy trên màn. Cái giá là 30 lượt qua kênh nền
+    // mỗi giây, 30 lượt gỡ-và-thêm `ARAnchor`, và 30 `ArMeasureMoveResult`
+    // không ai đọc.
+    test('quãng nắm sống ở tầng Swift, không phải một vòng lặp bên Dart', () {
+      expect(
+        _withoutComments(sessionSource),
+        contains('private func stepDrag('),
+        reason:
+            'Điểm đang nắm bám theo tia ở tầng Swift, mỗi khung hình, trong '
+            'cùng lượt dò mà tâm ngắm đã chạy.',
+      );
+
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func stepDrag('),
+      );
+      expect(
+        than,
+        isNot(contains('raycastFromReticle')),
+        reason:
+            'Lượt dò của khung hình này đã bắn tia rồi và kết quả được truyền '
+            'vào. Bắn lần thứ hai là hai tia khác nhau trong cùng một khung — '
+            'điểm đi tới một chỗ, tâm ngắm hứa một chỗ khác.',
+      );
+    });
+
+    test('đang nắm thì dò MỖI khung hình, không theo nhịp 10 Hz', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
+      );
+
+      expect(
+        RegExp(r'drag != nil').hasMatch(than),
+        isTrue,
+        reason:
+            'Ở `measured` lượt dò bị giãn xuống 10 Hz, và một đầu mút đang bị '
+            'kéo mà chỉ nhích 10 lần mỗi giây thì đọc ra một đầu mút GIẬT — '
+            'đúng cái cảm giác "nhích được một khoảng" mà cả lượt này đi bỏ.',
+      );
+    });
+
+    // Nguyên văn lời đặt hàng: *"một cái thước dây không rơi mất đầu khi tay
+    // che mất vạch"*. Tia trượt giữa quãng nắm là chuyện xảy ra liên tục — rê
+    // qua một mép bàn, qua một vệt sáng — và ở đó đầu mút phải ĐỨNG YÊN chờ,
+    // không được rơi về chỗ cũ và cũng không được biến mất.
+    test('tia trượt giữa quãng nắm thì đầu mút ĐỨNG YÊN', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func stepDrag('),
+      );
+
+      expect(
+        than,
+        isNot(contains('.miss(')),
+        reason:
+            'Quãng ôm của `LivePointFilter` hết hạn sau 100 ms và trả `nil`, và '
+            'ở đây `nil` nghĩa là đầu mút rơi về vị trí ARAnchor CŨ — tức là '
+            'nhảy ngược lại chỗ trước khi nắm, giữa lúc tay người dùng vẫn đang '
+            'giữ nó. Quãng nắm chỉ dùng nửa LÀM MƯỢT của bộ lọc.',
+      );
+      expect(
+        than,
+        isNot(contains('drag = nil')),
+        reason:
+            'Một khung trượt không kết thúc quãng nắm. Chỉ `releasePoint` và '
+            'các đường buông an toàn mới được buông.',
+      );
+    });
+
+    // Hai đường chốt điểm — một nhát `movePoint`, và cái buông ở cuối một quãng
+    // kéo — phải đi qua CÙNG một hàm. Hai bản chép lệch nhau thì một đường gỡ
+    // anchor cũ còn đường kia quên, hoặc một đường thay khối chẩn đoán còn
+    // đường kia để nguyên khối của lần chấm trước; cả hai hỏng câm.
+    test('nhát dời và cú buông chốt điểm qua CÙNG một hàm', () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(sach, contains('private func replacePoint('));
+      expect(
+        RegExp(r'replacePoint\(').allMatches(sach).length,
+        3,
+        reason:
+            'Một lần khai và HAI chỗ gọi — `movePoint(at:)` và `releasePoint()`.',
+      );
+
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func replacePoint('),
+      );
+      expect(than, contains('ARAnchor('));
+      expect(
+        than,
+        contains('sceneView.session.remove(anchor:'),
+        reason:
+            'Không gỡ là để lại một anchor mồ côi cho mỗi lượt chốt. Nó không '
+            'vẽ gì (node bị chặn), nên nó tích lại im lặng.',
+      );
+      expect(than, contains('sceneView.session.add(anchor:'));
+      expect(
+        than,
+        contains('pointDiagnostics.removeValue(forKey:'),
+        reason:
+            'Khối chẩn đoán CŨ phải rời map cùng lúc anchor cũ rời phiên. Để '
+            'lại là một khối gán cho một điểm không còn tồn tại, và nó lớn dần.',
+      );
+    });
+
+    // CA BẮT LỖI THẬT của cả lượt. Kéo trong CÙNG một mặt phẳng là ca mù: lai
+    // lịch của chỗ đầu và của chỗ cuối trùng nhau, nên mọi cách cài đều xanh.
+    // Thứ phân biệt chúng là một quãng kéo ĐỔI mặt phẳng — mặt bàn sang sàn —
+    // và ở đó một khối lai lịch chốt sai đọc ra những con số hoàn toàn hợp lệ.
+    test('buông chốt lai lịch của chỗ CUỐI, không của chỗ đầu', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func releasePoint('),
+      );
+
+      expect(
+        than,
+        contains('diagnostics'),
+        reason: 'cú buông phải chốt một khối lai lịch',
+      );
+      expect(
+        than,
+        isNot(contains('makeDiagnostics(')),
+        reason:
+            'Lai lịch KHÔNG được dựng lại ở lúc buông: `rayAngleDeg` và '
+            '`cameraDistanceMm` đo so với tư thế camera HIỆN TẠI, mà tư thế ấy '
+            'không phải tư thế đã sinh ra lượt trúng cuối. Dựng lại ở đây là '
+            'gán một góc chưa ai bắn cho một điểm đã đứng yên. Khối phải được '
+            'ghi tại CHÍNH khung hình đã đặt điểm tới chỗ ấy.',
+      );
+
+      final buoc = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func stepDrag('),
+      );
+      expect(
+        buoc,
+        contains('makeDiagnostics('),
+        reason:
+            'và chỗ ghi nó là mỗi bước kéo — khối của bước CUỐI chính là khối '
+            'của chỗ điểm dừng lại.',
+      );
+    });
+
+    // "Nắm mà app chết thì điểm không được kẹt ở trạng thái đang nắm."
+    test('mọi đường ra khỏi quãng nắm đều BUÔNG', () {
+      for (final signature in [
+        'func stop()',
+        'func pause()',
+        'func undoPoint()',
+        'func movePoint(at index: Int)',
+        'func sessionWasInterrupted(',
+      ]) {
+        expect(
+          _withoutComments(_swiftMethodBody(sessionSource, signature)),
+          contains('releasePoint()'),
+          reason:
+              '`$signature` bỏ quãng nắm lại phía sau. Đầu mút kẹt ở trạng thái '
+              'đang nắm, và app không có đường nào biết để vẽ lại.',
+        );
+      }
+
+      expect(
+        _withoutComments(_swiftMethodBody(sessionSource, 'private func clearAnchors(')),
+        contains('drag = nil'),
+        reason:
+            'Bỏ hết điểm thì cái đang nắm không còn tồn tại. Ở đây KHÔNG chốt '
+            'gì — chốt một điểm vào một danh sách vừa bị xoá là thêm lại đúng '
+            'cái điểm mà `reset` vừa bỏ.',
+      );
+    });
+
+    // App phải biết phiên còn đang nắm hay không, và biết từ MỘT nguồn: gói tự
+    // buông ở những đường app không gây ra.
+    test('đầu mút đang nắm đi lên Dart, và Dart đọc', () {
+      expect(sessionSource, contains('"grabbedPointIndex"'));
+      expect(dartSource, contains("raw['grabbedPointIndex']"));
+      expect(dartSource, contains('grabbedPointIndex'));
+    });
+
+    // Vị trí ĐANG VẼ của một điểm đang bị kéo đọc từ một chỗ DUY NHẤT. Hai phép
+    // tra chép tay lệch nhau thì hình vẽ bám theo tia còn con số tính trên
+    // ARAnchor chưa đổi — đúng cái "số và hình nói hai chuyện khác nhau" mà cả
+    // đường dời đầu mút sinh ra để đóng, chỉ lật ngược.
+    test('hình vẽ và con số đọc CHUNG một vị trí khi đang kéo', () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(sach, contains('private func position(ofPointAt'));
+      expect(
+        RegExp(r'position\(ofPointAt:').allMatches(sach).length,
+        greaterThanOrEqualTo(3),
+        reason:
+            'Một lần khai và ít nhất hai chỗ gọi — `currentMarks()` (hình vẽ '
+            'SceneKit và khung lớp phủ) và `currentDistanceMm()` (con số).',
+      );
+
+      for (final signature in [
+        'private func currentMarks()',
+        'private func currentDistanceMm()',
+      ]) {
+        expect(
+          _withoutComments(_swiftMethodBody(sessionSource, signature)),
+          contains('position(ofPointAt:'),
+          reason:
+              '`$signature` còn đọc thẳng `anchor.transform`, nên nó đứng im '
+              'suốt quãng kéo trong khi chỗ kia đã chạy theo tia.',
+        );
+      }
     });
   });
 

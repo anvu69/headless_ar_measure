@@ -128,6 +128,29 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
       }
       result((session(for: call)?.movePoint(at: index) ?? .notReady).rawValue)
 
+    case "grabPoint":
+      // Cùng hai giá trị canh gác, cùng lý do với `movePoint`: thiếu view hay
+      // một `index` không đọc được đều là chuyện của KÊNH, không phải một lời
+      // khai về việc app đang có mấy điểm. Trả `.noSuchPoint` ở đó là nói dối
+      // app về dữ liệu của chính app, và app tin thì cái nút nắm biến mất cho
+      // một điểm nó đang vẽ trên màn.
+      guard let index = Self.index(from: call) else {
+        result(ArMeasureGrabResult.notReady.rawValue)
+        return
+      }
+      result((session(for: call)?.grabPoint(at: index) ?? .notReady).rawValue)
+
+    case "releasePoint":
+      // KHÔNG mang chỉ số, và đó là chủ đích: phiên đang nắm đúng một đầu và
+      // chỉ nó biết đầu nào. Bắt app nói lại chỉ số ở lúc buông là dựng một
+      // nguồn sự thật thứ hai, và hai nguồn ấy lệch nhau ở đúng những đường gói
+      // TỰ buông (gián đoạn, `pause`, `reset`, ARKit bỏ anchor).
+      //
+      // Giá trị canh gác là `.notReady`, KHÔNG phải `.notGrabbing`: không có
+      // view nghĩa là không có phiên nào, mà "không nắm gì" là một câu về trạng
+      // thái CỦA MỘT PHIÊN.
+      result((session(for: call)?.releasePoint() ?? .notReady).rawValue)
+
     case "undoPoint":
       session(for: call)?.undoPoint()
       result(nil)

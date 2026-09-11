@@ -1,3 +1,155 @@
+## 0.11.0
+
+Two new commands: `grabPoint(index)` and `releasePoint()`. Between them the
+endpoint follows the crosshair **every frame**, natively.
+
+### "Only nudges it a bit"
+
+0.10.0 shipped `movePoint(index)` and it was the right causality — move the
+point, and the number changes because the picture changed. It was the wrong
+*gesture*. From a real device:
+
+> aiming the crosshair at an endpoint brings up this "Move this end" function.
+> But it is **unpleasant** to use — it is not grabbing that point and dragging
+> until you let go; pressing "Move this end" **only nudges it one step**. It has
+> to actually feel **like adjusting the two ends of a tape measure**.
+
+`movePoint` is one stroke: one tap, one raycast, one new place. A tape measure
+is a span — you take hold of the end, you move, you let go.
+
+```dart
+switch (await controller.grabPoint(1)) {
+  case ArMeasureGrabResult.grabbed:         // from the next frame it follows the crosshair
+  case ArMeasureGrabResult.alreadyGrabbing: // let go of the one in your hand first
+  case ArMeasureGrabResult.noSuchPoint:     // a bug, or a race with undoPoint()
+  case ArMeasureGrabResult.notReady:        // the status already says why
+}
+
+// …the user pans the device; nothing crosses the channel…
+
+switch (await controller.releasePoint()) {
+  case ArMeasureReleaseResult.released:    // pinned at the last hit; the number is recomputed
+  case ArMeasureReleaseResult.unmoved:     // no frame in the whole span found a surface
+  case ArMeasureReleaseResult.notGrabbing: // the package had already let go
+  case ArMeasureReleaseResult.notReady:    // dead channel, or a disposed session
+}
+```
+
+`movePoint` is unchanged and is not deprecated. One stroke and one span are two
+different gestures; both end at the same commit function.
+
+### Do not build the span out of repeated `movePoint` calls
+
+It draws the same picture on screen, so it has no symptom other than the battery
+bill: thirty channel round-trips a second, thirty `ARAnchor` remove-and-add
+pairs pushed into the ARKit session, and thirty `ArMeasureMoveResult` values
+nobody reads.
+
+The span lives in Swift. It rides the raycast the reticle probe **already** ran
+for this frame — there is no second ray, and the two would disagree: the point
+would go one place while the crosshair promised another.
+
+One throttle had to move. At `measured` the probe is sampled on a 10Hz grid, and
+an endpoint being dragged that only steps ten times a second reads as an
+endpoint that **jumps** — the same "only nudges it a bit" the span exists to
+remove. While a grab is open the probe runs every frame, exactly as it already
+does when the segment has a live end.
+
+### A losing ray freezes the end, it does not drop it
+
+A tape measure does not lose its end when your hand covers the marks. Panning
+across a table edge or a patch of glare misses for a handful of frames; the
+endpoint stands still and waits.
+
+Concretely, the drag **never** calls `LivePointFilter.miss()`. That hold expires
+after 100 ms and returns `nil`, and `nil` here would mean the endpoint snaps
+back to its old anchor position — jumping backwards out of the user's hand.
+
+No new field reports it. `aimTarget` and `aimLocked` already say "the ray is on
+nothing" at their own rate, and `measured` has been inside the reticle's
+meaningful states since 0.10.0, so they keep speaking for the whole span. A
+second field saying the same thing on a different clock is two sources that
+drift apart.
+
+### The dragged end *does* go through the smoothing filter
+
+0.10.0 said, in as many words, that a moved point must not touch
+`LivePointFilter`. That sentence is still correct about what it describes, and a
+drag breaks both halves of its premise.
+
+A dragged endpoint genuinely is a live endpoint — redrawn sixty times a second
+off a fresh ray — so it catches both noises the filter exists for, and a user on
+a real device already named them for the segment's live end: *"the endpoint can
+flicker constantly."* Three raycast layers are tried in order, so consecutive
+frames can return two different **surfaces** and the point jumps by centimetres
+while the hand is still.
+
+And the cost does not reach a settled point, because **release pins the last
+hit, not the smoothed trail**. The filter shapes what you look at; the raycast
+decides where the point is. A separate filter instance, not the one feeding the
+live end — both can be open at once (`grabPoint(0)` while end B is still live),
+and their release rules are opposite: the live end expires after the 100 ms
+hold, the held end never does.
+
+### Release commits the last hit, and its provenance
+
+Three ways to end a drag, and two of them are wrong:
+
+* **Commit the smoothed position.** Position and provenance then disagree by
+  exactly the filter's lag. Drag across a plane boundary and let go promptly and
+  you get a point *standing* on one plane while *declaring* the other — the
+  lying-in-valid-numbers failure the whole diagnostics layer exists to block.
+* **Fire a fresh ray at the release frame.** One missed frame at that instant
+  throws away a two-second drag and the point snaps back to where it started.
+
+So the last successful hit is what lands: its `worldTransform` becomes the new
+anchor and its diagnostics block becomes the point's provenance. That block is
+measured **at the frame that put the point there**, not rebuilt at release —
+`rayAngleDeg` and `cameraDistanceMm` are relative to the camera pose, and the
+camera has moved since. Rebuilding would staple an angle nobody ever fired onto
+a point that has been standing still.
+
+Mid-drag samples carry provisional provenance by construction. Do not read
+`diagnostics` from a sample inside a span as a conclusion.
+
+A test that drags **within one plane** and checks the provenance is blind — the
+start and the end agree, so every implementation passes. The test that bites
+crosses from one plane to another.
+
+### Both commit paths are one function
+
+`movePoint` and the release at the end of a drag both go through
+`replacePoint(at:with:diagnostics:)`. Two copies drift: one path forgets to
+remove the old anchor, or one path replaces the diagnostics entry and the other
+leaves the previous tap's block in place. Both fail silently.
+
+### Letting go safely
+
+A grab must not survive the thing it is holding. The session releases by itself
+on `pause()`, `stop()`/`dispose`, `undoPoint()`, `movePoint()`, and
+`sessionWasInterrupted` (a call, Control Center, backgrounding) — the crosshair
+is no longer in the user's hand, and holding across an unknown gap would yank
+the point somewhere nobody aimed. Those releases **commit**: the last hit was
+recorded while tracking was normal, since the probe accepts hits in no other
+state.
+
+Two paths drop the grab without committing, because the point it names has
+stopped existing: `reset()`/`clearAnchors()`, and ARKit removing the anchor
+itself (indices have shifted, and committing through a shifted index would move
+an endpoint the user never touched).
+
+### `ArMeasureSample.grabbedPointIndex`
+
+Which end the session is holding, `null` for none. **Read this rather than
+remembering what `grabPoint` returned** — the session lets go on paths your app
+did not cause, and an app keeping its own copy goes on drawing "holding end A"
+for a span that ended, with a release button that releases nothing.
+
+It is **not** gated on `status`, unlike the four `aim*` fields: those are
+derived from a raycast, so they expire when the ray does, but a grab is a state
+of the *session*. Gating it would make the release button vanish during half a
+second of hand tremor, with no way out of the span.
+
 ## 0.10.0
 
 One new command: `movePoint(index)` moves an already-placed endpoint to

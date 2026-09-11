@@ -126,6 +126,76 @@ enum ArMeasureMoveResult {
   noSuchPoint,
 }
 
+/// Chuyện gì đã xảy ra với một lời gọi [ArMeasureController.grabPoint].
+///
+/// Vì sao cặp [ArMeasureController.grabPoint]/[ArMeasureController.releasePoint]
+/// tồn tại bên cạnh [ArMeasureController.movePoint], nguyên văn lượt máy thật:
+/// *"chiếu hồng tâm vào đầu mút thì hiện lên chức năng Dời đầu này. Tuy nhiên
+/// cách dùng khó chịu, nó không phải nắm lấy điểm đó và kéo cho đến khi buông
+/// ra, mà nhấn vào nút Dời đầu này là chỉ nhích được một khoảng. Phải làm cho
+/// nó thực tế giống như chỉnh 2 đầu của một chiếc thước dây vậy."*
+///
+/// [ArMeasureController.movePoint] là một NHÁT dời — một cú bấm, một lượt bắn
+/// tia, một chỗ mới. Cặp này mở một QUÃNG nắm, và trong quãng ấy đầu mút bám
+/// theo tâm ngắm ở **mỗi khung hình**, ở tầng nền.
+///
+/// **Đừng cài một quãng nắm bằng cách gọi [ArMeasureController.movePoint] liên
+/// tục.** Nó cho ra đúng hình ấy trên màn, nên nó không có triệu chứng nào
+/// ngoài hoá đơn pin: 30 lượt qua kênh nền mỗi giây, 30 lượt gỡ-và-thêm một
+/// `ARAnchor` vào phiên ARKit, và 30 [ArMeasureMoveResult] không ai đọc.
+enum ArMeasureGrabResult {
+  /// Đã nắm. Từ khung hình kế tiếp, đầu mút bám theo tâm ngắm.
+  grabbed,
+
+  /// Phiên không ở trạng thái bắn tia được, hoặc phiên đã dừng.
+  ///
+  /// Cũng là giá trị của một kênh câm — thiếu plugin, view đã chết, hay một bản
+  /// Swift **cũ hơn cặp lệnh này**. Không phải [noSuchPoint], cùng một luật với
+  /// [ArMeasureMoveResult.notReady]: một kênh câm không biết app đang có mấy
+  /// điểm.
+  notReady,
+
+  /// Chỉ số không trỏ vào điểm nào đang có. Một câu nói với APP, không phải với
+  /// người dùng — xem [ArMeasureMoveResult.noSuchPoint].
+  noSuchPoint,
+
+  /// Đang nắm một đầu rồi. Câu đúng: buông cái đang cầm trước đã.
+  ///
+  /// Gói cố ý KHÔNG tự buông cái cũ rồi nắm cái mới: hai lượt chốt điểm trong
+  /// một cú bấm là một thao tác người dùng không xin.
+  alreadyGrabbing,
+}
+
+/// Chuyện gì đã xảy ra với một lời gọi [ArMeasureController.releasePoint].
+enum ArMeasureReleaseResult {
+  /// Đã buông, và điểm chốt ở chỗ lượt trúng CUỐI của quãng kéo. Số đo đã tính
+  /// lại, và nó vẫn TRÔI như mọi số chưa chốt.
+  released,
+
+  /// Đã buông, và điểm nằm **nguyên chỗ cũ**: không khung nào trong cả quãng
+  /// nắm bắt được bề mặt.
+  ///
+  /// Tách khỏi [released] vì câu nói với người dùng ngược nhau — một bên là "đã
+  /// dời, chốt lại khi số đứng yên", một bên là "chưa dời được, chĩa vào chỗ có
+  /// vân rồi nắm lại". Gộp là để màn báo đã dời cho một cú dời chưa xảy ra.
+  unmoved,
+
+  /// Không có gì trong tay: gói đã tự buông, hoặc chưa nắm bao giờ.
+  ///
+  /// Gói tự buông ở những đường app không gây ra — phiên gián đoạn, `pause`,
+  /// `reset`, `dispose`, một lệnh khác dời điểm, hay ARKit bỏ chính cái anchor
+  /// đang nắm. Đọc [ArMeasureSample.grabbedPointIndex] để biết trước.
+  notGrabbing,
+
+  /// Phiên đã dừng; cũng là giá trị của một kênh câm.
+  ///
+  /// Tách khỏi [notGrabbing] cùng lẽ với cặp
+  /// [ArMeasureMoveResult.noSuchPoint]/[ArMeasureMoveResult.notReady]:
+  /// [notGrabbing] là một câu về TRẠNG THÁI của phiên, mà một kênh chết không
+  /// biết gì về trạng thái ấy.
+  notReady,
+}
+
 /// Một số đo khoảng cách.
 class ArMeasurement {
   const ArMeasurement({
@@ -509,6 +579,7 @@ class ArMeasureSample {
     this.aimOvershootMm,
     this.aimRayAngleDeg,
     this.aimPlaneId,
+    this.grabbedPointIndex,
     this.diagnostics,
   });
 
@@ -654,6 +725,31 @@ class ArMeasureSample {
   /// đổi: `aimOvershootMm != null` vẫn đúng bằng
   /// `aimTarget == existingPlaneInfinite`.
   final String? aimPlaneId;
+
+  /// Đầu mút mà phiên ĐANG NẮM — `0` là đầu chấm trước, `1` là đầu chấm sau.
+  /// `null` là không nắm gì.
+  ///
+  /// Mở bằng [ArMeasureController.grabPoint], đóng bằng
+  /// [ArMeasureController.releasePoint]. Trong quãng ấy đầu mút bám theo tâm
+  /// ngắm ở mỗi khung hình, và cả số đo lẫn [ArMeasureOverlay] chạy theo.
+  ///
+  /// **Đọc trường này chứ đừng tự nhớ lấy từ giá trị trả về của
+  /// [ArMeasureController.grabPoint].** Gói TỰ buông ở những đường app không
+  /// gây ra: phiên gián đoạn (cuộc gọi, xuống nền), [ArMeasureController.pause],
+  /// [ArMeasureController.reset], [ArMeasureController.dispose],
+  /// [ArMeasureController.undoPoint], [ArMeasureController.movePoint], hay ARKit
+  /// bỏ chính cái anchor đang nắm. App nhớ một mình thì sau những lượt ấy nó
+  /// còn vẽ "đang nắm đầu A" cho một quãng đã kết thúc, và cái nút buông không
+  /// buông gì cả.
+  ///
+  /// KHÔNG bị gác theo [status], khác hẳn bốn trường `aim*`: chúng suy từ một
+  /// lượt raycast nên chúng hết nghĩa lúc tia hết nghĩa, còn quãng nắm là một
+  /// trạng thái của PHIÊN. Gác nó theo trạng thái là cái nút buông biến mất ở
+  /// đúng lúc phiên rung tay.
+  ///
+  /// `null` cũng là đường của một bản Swift cũ hơn cặp lệnh này — và ở đó `null`
+  /// là sự thật, vì bản ấy không có đường nào để nắm.
+  final int? grabbedPointIndex;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -941,6 +1037,12 @@ class ArMeasure {
       // phẳng" — đúng kết luận sai mà trường này sinh ra để chặn, và nó sai im
       // lặng, về phía "yên tâm".
       aimPlaneId: _parseIdentity(raw['aimPlaneId']),
+      // Sai kiểu coi như THIẾU, và không giết mẫu — cùng lối rẽ với mọi khoá
+      // phụ khác. Mất một mẫu vì một trường không tham gia phép tính nào là để
+      // màn đo đứng im ở khung hình cuối.
+      grabbedPointIndex: raw['grabbedPointIndex'] is int
+          ? raw['grabbedPointIndex']! as int
+          : null,
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
@@ -1193,6 +1295,31 @@ ArMeasureMoveResult _parseMoveResult(Object? raw) {
   };
 }
 
+ArMeasureGrabResult _parseGrabResult(Object? raw) {
+  return switch (raw) {
+    'grabbed' => ArMeasureGrabResult.grabbed,
+    'notReady' => ArMeasureGrabResult.notReady,
+    'noSuchPoint' => ArMeasureGrabResult.noSuchPoint,
+    'alreadyGrabbing' => ArMeasureGrabResult.alreadyGrabbing,
+    // Mọi thứ không đọc được đổ về `notReady`, KHÔNG về `noSuchPoint`: cùng
+    // một luật với [_parseMoveResult].
+    _ => ArMeasureGrabResult.notReady,
+  };
+}
+
+ArMeasureReleaseResult _parseReleaseResult(Object? raw) {
+  return switch (raw) {
+    'released' => ArMeasureReleaseResult.released,
+    'unmoved' => ArMeasureReleaseResult.unmoved,
+    'notGrabbing' => ArMeasureReleaseResult.notGrabbing,
+    'notReady' => ArMeasureReleaseResult.notReady,
+    // Không đọc được đổ về `notReady`, KHÔNG về `notGrabbing`: "không nắm gì"
+    // là một câu về trạng thái của một PHIÊN, và một kênh câm không có phiên
+    // nào để nói về.
+    _ => ArMeasureReleaseResult.notReady,
+  };
+}
+
 /// Các lệnh gửi tới đúng một platform view.
 ///
 /// Dựng từ id mà [ArMeasureView.onPlatformViewCreated] báo ra. Lệnh mang theo
@@ -1279,6 +1406,78 @@ class ArMeasureController {
       return _parseMoveResult(raw);
     } catch (_) {
       return ArMeasureMoveResult.notReady;
+    }
+  }
+
+  /// **NẮM** điểm thứ [index]: mở một quãng kéo.
+  ///
+  /// Từ khung hình kế tiếp, đầu mút ấy bám theo giao điểm của tia tâm ngắm —
+  /// **mỗi khung hình**, ở tầng nền, trong cùng lượt dò mà tâm ngắm đã chạy.
+  /// Không có lượt bắn tia thứ hai, và không có lượt gọi kênh nào trong suốt
+  /// quãng kéo.
+  ///
+  /// **Đừng cài quãng nắm bằng cách gọi [movePoint] liên tục** — xem
+  /// [ArMeasureGrabResult].
+  ///
+  /// Chỉ số hợp lệ là chỉ số trỏ vào một điểm ĐANG CÓ, cùng luật với
+  /// [movePoint]: một điểm thì `0`; hai điểm thì `0` và `1`.
+  ///
+  /// **Trong lúc nắm, tia TRƯỢT thì đầu mút ĐỨNG YÊN** — nó không rơi về chỗ
+  /// cũ và không biến mất. Một cái thước dây không rơi mất đầu khi tay che mất
+  /// vạch. App không mất tin ấy: [ArMeasureSample.aimTarget] và
+  /// [ArMeasureSample.aimLocked] vẫn nói ra, đúng nhịp, suốt quãng kéo.
+  ///
+  /// **Số đo và [ArMeasure.overlay] chạy theo liên tục.** Số vẫn TRÔI như mọi
+  /// số chưa chốt.
+  ///
+  /// Đừng nhớ lấy "đang nắm đầu nào" từ giá trị trả về của hàm này — đọc
+  /// [ArMeasureSample.grabbedPointIndex], vì gói tự buông ở những đường app
+  /// không gây ra.
+  ///
+  /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureGrabResult.notReady].
+  Future<ArMeasureGrabResult> grabPoint(int index) async {
+    try {
+      final raw = await ArMeasure._method.invokeMethod<String>('grabPoint', {
+        'viewId': viewId,
+        'index': index,
+      });
+      return _parseGrabResult(raw);
+    } catch (_) {
+      return ArMeasureGrabResult.notReady;
+    }
+  }
+
+  /// **BUÔNG**: đóng quãng nắm và chốt điểm ở chỗ nó đang đứng.
+  ///
+  /// Không nhận chỉ số, và đó là chủ đích: phiên đang nắm đúng một đầu và chỉ
+  /// nó biết đầu nào. Bắt app nói lại chỉ số ở lúc buông là dựng một nguồn sự
+  /// thật thứ hai, và hai nguồn ấy lệch nhau ở đúng những đường gói TỰ buông.
+  ///
+  /// **Chốt lượt trúng CUỐI của quãng kéo** — không chốt vệt đã làm mượt mà mắt
+  /// vừa nhìn theo, và không bắn một tia mới ở đúng khung hình buông. Hai lối
+  /// kia đều hỏng: một bên là vị trí và lai lịch lệch nhau đúng bằng độ trễ của
+  /// bộ lọc (kéo qua ranh giới hai mặt phẳng rồi buông ngay là một điểm ĐỨNG
+  /// trên mặt này mà KHAI mặt kia); một bên là một khung trượt ở đúng khoảnh
+  /// khắc ấy vứt cả quãng kéo và điểm nhảy ngược về chỗ trước khi nắm.
+  ///
+  /// **Lai lịch tính lại ở đây, và là lai lịch của chỗ CUỐI, cả khối**: tầng
+  /// tia, quãng vượt biên, định danh mặt phẳng, góc và cự ly đều của lượt trúng
+  /// cuối, đo tại chính khung hình đã đặt điểm tới chỗ ấy. Trong lúc kéo thì
+  /// mọi lai lịch đều là TẠM — đừng đọc [ArMeasureSample.diagnostics] của một
+  /// mẫu giữa quãng kéo như một kết luận.
+  ///
+  /// Gọi được bao nhiêu lần cũng không sao: lượt thứ hai ra
+  /// [ArMeasureReleaseResult.notGrabbing] và không đụng gì.
+  ///
+  /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureReleaseResult.notReady].
+  Future<ArMeasureReleaseResult> releasePoint() async {
+    try {
+      final raw = await ArMeasure._method.invokeMethod<String>('releasePoint', {
+        'viewId': viewId,
+      });
+      return _parseReleaseResult(raw);
+    } catch (_) {
+      return ArMeasureReleaseResult.notReady;
     }
   }
 

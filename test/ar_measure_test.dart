@@ -1462,7 +1462,7 @@ void main() {
           );
     });
 
-    // Tám lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
+    // Mười lệnh, và MỖI lệnh phải chở theo viewId. Thiếu id thì tầng Swift
     // không tra được view nào trong sổ đăng ký, và lệnh rơi vào chỗ trống mà
     // không có gì nổ — đúng dạng lỗi câm mà ca kiểm này tồn tại để chặn.
     test('mọi lệnh gửi đúng tên và kèm viewId', () async {
@@ -1470,6 +1470,8 @@ void main() {
 
       await c.placePoint();
       await c.movePoint(1);
+      await c.grabPoint(0);
+      await c.releasePoint();
       await c.undoPoint();
       await c.reset();
       await c.pause();
@@ -1480,6 +1482,8 @@ void main() {
       expect(calls.map((c) => c.method), [
         'placePoint',
         'movePoint',
+        'grabPoint',
+        'releasePoint',
         'undoPoint',
         'reset',
         'pause',
@@ -1490,13 +1494,25 @@ void main() {
       for (final call in calls) {
         expect((call.arguments as Map)['viewId'], 7);
       }
-      // `movePoint` là lệnh DUY NHẤT mang thêm một tham số, và tham số ấy là
-      // toàn bộ nội dung của nó: một lệnh dời không nói dời đầu nào thì tầng
-      // Swift phải đoán, và đoán sai là dời nhầm đầu — một điểm nhảy chỗ, một
-      // con số mới, và không có gì nổ.
+      // `movePoint` và `grabPoint` là hai lệnh DUY NHẤT mang thêm một tham số,
+      // và tham số ấy là toàn bộ nội dung của chúng: một lệnh không nói đụng
+      // vào đầu nào thì tầng Swift phải đoán, và đoán sai là dời nhầm đầu —
+      // một điểm nhảy chỗ, một con số mới, và không có gì nổ.
       expect(
         calls.firstWhere((c) => c.method == 'movePoint').arguments,
         {'viewId': 7, 'index': 1},
+      );
+      expect(
+        calls.firstWhere((c) => c.method == 'grabPoint').arguments,
+        {'viewId': 7, 'index': 0},
+      );
+      // `releasePoint` thì KHÔNG mang chỉ số, và đó là chủ đích: phiên đang
+      // nắm đúng một đầu và chỉ nó biết đầu nào. Bắt app nói lại chỉ số ở lúc
+      // buông là dựng một nguồn sự thật thứ hai, và hai nguồn ấy lệch nhau ở
+      // đúng những đường gói TỰ buông (gián đoạn, mất bám, `reset`).
+      expect(
+        calls.firstWhere((c) => c.method == 'releasePoint').arguments,
+        {'viewId': 7},
       );
     });
 

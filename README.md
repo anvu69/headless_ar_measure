@@ -90,6 +90,8 @@ controller?.dispose();
 | `ArMeasureView` | A thin `UiKitView` wrapper around the native camera surface. Takes no touches — put your buttons on top of it |
 | `ArMeasureController.placePoint()` | Places a point under the screen centre; returns an `ArMeasurePlaceResult` saying why not, when not |
 | `ArMeasureController.movePoint(i)` | Moves an already-placed endpoint to where the centre ray is hitting now; returns an `ArMeasureMoveResult` |
+| `ArMeasureController.grabPoint(i)` | Takes hold of an endpoint; it follows the crosshair every frame until released. Returns an `ArMeasureGrabResult` |
+| `ArMeasureController.releasePoint()` | Lets go and pins the endpoint at the drag's last hit; returns an `ArMeasureReleaseResult` |
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
 | `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
@@ -410,6 +412,65 @@ and it would force the package to pick a proximity threshold, which is the one
 thing it does not know enough to pick. An endpoint that is `null` leaves no gap
 in that comparison: a point with no screen coordinate cannot be the one near the
 crosshair.
+
+### Grab, drag, let go
+
+`movePoint(i)` was the right causality and the wrong gesture. From a real
+device:
+
+> aiming the crosshair at an endpoint brings up this "Move this end" function.
+> But it is **unpleasant** to use — it is not grabbing that point and dragging
+> until you let go; pressing "Move this end" **only nudges it one step**. It has
+> to actually feel **like adjusting the two ends of a tape measure**.
+
+`movePoint` is one stroke. A tape measure is a span.
+
+```dart
+await controller?.grabPoint(1);     // from the next frame it follows the crosshair
+// …the user pans the device. Nothing crosses the channel…
+await controller?.releasePoint();   // pinned at the last hit; provenance recomputed
+```
+
+`movePoint` is unchanged and not deprecated — one stroke and one span are two
+gestures, and both end at the same commit.
+
+**Do not build the span out of repeated `movePoint` calls.** It draws the same
+picture, so it has no symptom other than the battery bill: thirty channel
+round-trips a second, thirty `ARAnchor` remove-and-add pairs pushed into the
+ARKit session, and thirty results nobody reads. The span runs in Swift, on the
+raycast the reticle probe already fired for that frame — a second ray would
+disagree with the first, and the point would go somewhere the crosshair did not
+promise.
+
+**A losing ray freezes the end; it does not drop it.** A tape measure does not
+lose its end when your hand covers the marks. No new field reports the miss —
+`aimTarget`/`aimLocked` already do, at their own rate, for the whole span.
+
+**Release pins the drag's last hit, not the smoothed trail you were watching,
+and not a fresh ray fired at the release frame.** Committing the smoothed
+position makes position and provenance disagree by the filter's lag — drag
+across a plane boundary, let go promptly, and the point *stands* on one plane
+while *declaring* the other. Firing a fresh ray means one missed frame at that
+instant throws away the whole drag.
+
+**Provenance is recomputed at release and belongs to the final position** —
+tier, overshoot, plane identity, grazing angle, camera distance — measured at
+the frame that put the point there, not rebuilt when you let go (the camera has
+moved since; a rebuilt `rayAngleDeg` is an angle nobody ever fired). Mid-drag,
+every provenance is provisional; do not read `diagnostics` from a sample inside
+a span as a conclusion.
+
+**The session lets go by itself** on `pause()`, `dispose()`, `undoPoint()`,
+`movePoint()` and on interruptions (a call, Control Center, backgrounding) —
+those commit. `reset()` and ARKit removing the anchor drop the grab **without**
+committing, because the point it names has stopped existing.
+
+**Read `ArMeasureSample.grabbedPointIndex`** rather than remembering what
+`grabPoint` returned. It is the only source that also reports those automatic
+releases; an app keeping its own copy goes on drawing "holding end A" for a span
+that ended. It is deliberately not gated on `status` — a grab is a state of the
+session, not of a raycast, and gating it would make your release button vanish
+during half a second of hand tremor.
 
 ### Every sample carries how the measurement happened
 

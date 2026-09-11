@@ -86,6 +86,56 @@ enum ArMeasureMoveResult: String {
   case noSuchPoint
 }
 
+/// Chuyện gì đã xảy ra với một lời gọi `grabPoint(at:)`.
+///
+/// Vì sao cặp `grabPoint`/`releasePoint` tồn tại bên cạnh `movePoint(at:)`,
+/// nguyên văn lượt máy thật: *"chiếu hồng tâm vào đầu mút thì hiện lên chức
+/// năng Dời đầu này. Tuy nhiên cách dùng khó chịu, nó không phải nắm lấy điểm
+/// đó và kéo cho đến khi buông ra, mà nhấn vào nút Dời đầu này là chỉ nhích
+/// được một khoảng. Phải làm cho nó thực tế giống như chỉnh 2 đầu của một chiếc
+/// thước dây vậy."*
+///
+/// `movePoint` là một NHÁT dời; cặp này mở một QUÃNG nắm, và trong quãng ấy đầu
+/// mút bám theo tia ở mỗi khung hình.
+///
+/// * `grabbed` — đã nắm; từ khung hình kế tiếp đầu mút bám theo tâm ngắm
+/// * `notReady` — phiên không ở trạng thái bắn tia được, hoặc phiên đã dừng
+/// * `noSuchPoint` — chỉ số không trỏ vào điểm nào đang có; một câu nói với APP
+/// * `alreadyGrabbing` — đang nắm một đầu rồi; buông cái ấy trước
+///
+/// `rawValue` **LÀ** hợp đồng, y như `ArMeasureMoveResult`. Chiều hỏng ở đây là
+/// chiều câm nhất của cả bộ: một chuỗi lệch làm Dart đọc ra `notReady` trong
+/// khi tầng Swift ĐÃ nắm, nên app không vẽ trạng thái nắm — người dùng rê máy,
+/// thấy đầu mút chạy theo, và không có cái nút nào để buông.
+enum ArMeasureGrabResult: String {
+  case grabbed
+  case notReady
+  case noSuchPoint
+  case alreadyGrabbing
+}
+
+/// Chuyện gì đã xảy ra với một lời gọi `releasePoint()`.
+///
+/// * `released` — đã buông, và điểm chốt ở chỗ lượt trúng CUỐI của quãng kéo
+/// * `unmoved` — đã buông, và điểm nằm nguyên chỗ cũ: **không khung nào** trong
+///   cả quãng nắm bắt được bề mặt
+/// * `notGrabbing` — không có gì trong tay (gói đã tự buông, hoặc chưa nắm)
+/// * `notReady` — phiên đã dừng; cũng là giá trị của một kênh câm
+///
+/// `unmoved` tách khỏi `released` vì câu nói với người dùng ngược nhau: một bên
+/// là "đã dời, chốt lại khi số đứng yên", một bên là "chưa dời được, chĩa vào
+/// chỗ có vân rồi nắm lại". Gộp là để màn báo đã dời cho một cú dời chưa xảy ra.
+///
+/// `notGrabbing` tách khỏi `notReady` vì cùng lẽ với cặp
+/// `noSuchPoint`/`notReady` của `movePoint`: `notGrabbing` là một câu về TRẠNG
+/// THÁI của phiên, mà một kênh chết không biết gì về trạng thái ấy.
+enum ArMeasureReleaseResult: String {
+  case released
+  case unmoved
+  case notGrabbing
+  case notReady
+}
+
 // MARK: - Chẩn đoán
 
 /// Tầng mục tiêu mà tia ĐÃ trúng — đọc thẳng từ `ARRaycastResult.target`.
@@ -290,8 +340,15 @@ private enum ArReticleProbe {
   ///
   /// Định danh cũng vậy, và mạnh hơn: mặt phẳng có thể đã lớn lên hoặc bị GỘP
   /// với mặt khác giữa hai lượt, nên hỏi lại sau là hỏi về một thế giới khác.
+  ///
+  /// `surface` là CHÍNH kết quả raycast đã sinh ra bốn thứ trên. Nó đi kèm vì
+  /// một quãng NẮM cần dựng một `ARAnchor` và một khối chẩn đoán từ đúng lượt
+  /// bắn này — xem `ArMeasureSession.stepDrag(now:probe:)`. Bắn một tia thứ hai
+  /// để lấy lại nó là hai tia khác nhau trong cùng một khung hình: điểm đi tới
+  /// một chỗ, còn tâm ngắm hứa một chỗ khác.
   case hit(
     point: SIMD3<Float>,
+    surface: ArSurfaceHit,
     target: ArRaycastTarget?,
     overshootMm: Double?,
     rayAngleDeg: Double?,
@@ -299,6 +356,62 @@ private enum ArReticleProbe {
 
   /// Đã dò và không trúng gì.
   case missed
+}
+
+/// Một quãng NẮM đang mở: đầu mút nào đang trong tay, và nó đã bám tới đâu.
+///
+/// **Không đụng vào `ARAnchor` trong suốt quãng kéo.** Dời một anchor nghĩa là
+/// `session.remove` cộng `session.add`, và làm việc ấy 60 lần mỗi giây là 60
+/// lượt đột biến vào phiên ARKit cho một điểm chưa chốt. Thay vào đó [point]
+/// che vị trí của anchor ở tầng ĐỌC ([ArMeasureSession.position(ofPointAt:)]),
+/// và anchor chỉ bị thay đúng một lần, ở lúc buông — qua cùng một hàm mà
+/// `movePoint(at:)` dùng.
+private struct ArDragState {
+  /// Chỉ số của điểm đang nắm, trong `anchors`.
+  let index: Int
+
+  /// Vị trí ĐANG VẼ, đã làm mượt.
+  ///
+  /// **Chỉ dùng nửa LÀM MƯỢT của `LivePointFilter`, không dùng nửa quãng ôm.**
+  /// Đây là chỗ lật lời chú cũ của `movePoint(at:)` ("dời KHÔNG đi qua bộ lọc
+  /// đầu mút sống"), và lời chú ấy vẫn đúng nguyên văn cho cái nó nói về: một
+  /// NHÁT dời đặt điểm đúng một lần, nên độ trễ của bộ lọc là một sai số hệ
+  /// thống chôn vào một điểm đã chốt, và quãng ôm 100 ms còn cho một lượt TRƯỢT
+  /// trả về toạ độ cũ rồi báo `moved`.
+  ///
+  /// Một quãng KÉO thì khác hẳn ở cả hai vế:
+  ///
+  /// * Nó đúng là một đầu mút SỐNG — vẽ lại 60 lần mỗi giây từ một tia mới, nên
+  ///   nó dính đúng hai dạng nhiễu mà bộ lọc sinh ra để chặn, và người dùng đã
+  ///   gọi tên chúng trên máy thật cho đầu sống của đoạn thẳng: *"đặc biệt ở
+  ///   đầu mút có thể nhấp nháy liên tục"*. Ba tầng tia được thử theo thứ tự,
+  ///   nên hai khung liên tiếp trả về hai BỀ MẶT khác nhau và điểm nhảy hàng
+  ///   centimét trong khi tay người dùng đứng yên.
+  /// * Quãng ôm không tham gia: [ArMeasureSession.stepDrag(now:probe:)] KHÔNG
+  ///   gọi `miss(at:)` bao giờ, nên bộ lọc không có đường nào hết hạn và trả
+  ///   `nil`. Tia trượt thì điểm đứng yên — vô thời hạn, cho tới lượt trúng kế
+  ///   tiếp hoặc tới lúc buông.
+  ///
+  /// Và cái giá — độ trễ — không đi vào điểm đã chốt, vì lúc buông gói chốt
+  /// [hit] chứ không chốt giá trị này. Xem [ArMeasureSession.releasePoint].
+  var filter = LivePointFilter()
+
+  /// Lượt TRÚNG gần nhất của quãng này. `nil` khi chưa khung nào trúng.
+  ///
+  /// Đây là thứ được chốt lúc buông — **không phải** [filter]. Vệt đã làm mượt
+  /// là thứ để NHÌN; chỗ đúng là chỗ tia trúng. Hai thứ ấy chỉ lệch nhau trong
+  /// lúc tay còn đang rê (τ = 0,03 s, nên chúng gặp nhau trong khoảng một phần
+  /// mười giây sau khi tay dừng), và người dùng phải dừng tay để với tới nút
+  /// buông.
+  var hit: ArSurfaceHit?
+
+  /// Lai lịch đo tại CHÍNH khung hình đã sinh ra [hit].
+  ///
+  /// Ghi ở mỗi bước kéo chứ không dựng lại lúc buông, và đây là chỗ đắt nhất
+  /// của cả lượt: `rayAngleDeg` và `cameraDistanceMm` đo so với tư thế camera
+  /// HIỆN TẠI, nên một khối dựng lại ở lúc buông gán một góc chưa ai bắn cho
+  /// một điểm đã đứng yên — một con số độ trông hoàn toàn hợp lệ.
+  var diagnostics: ArPointDiagnostics?
 }
 
 /// Chặn `ARSCNView` dựng `SCNNode` cho anchor.
@@ -913,6 +1026,16 @@ final class ArMeasureSession: NSObject {
   /// chỗ duy nhất buông cứng.
   private var livePoint = LivePointFilter()
 
+  /// Quãng NẮM đang mở, hoặc `nil` khi không có gì trong tay.
+  ///
+  /// Bộ lọc RIÊNG, không dùng chung với [livePoint], và đó không phải một lượt
+  /// dọn cho gọn: hai thứ ấy sống cùng lúc được. Đầu sống của đoạn thẳng chạy
+  /// khi có ĐÚNG một điểm, còn một điểm đã chấm là một điểm nắm được — nên
+  /// `grabPoint(at: 0)` lúc đầu B còn sống là một cảnh hợp lệ, và ở đó hai bộ
+  /// lọc nhận cùng một mẫu nhưng KHÁC luật buông: đầu sống hết hạn ôm sau 100
+  /// ms, đầu đang nắm thì không bao giờ.
+  private var drag: ArDragState?
+
   /// Phép đếm điểm đặc trưng của khung hình đã sinh ra lượt lấy mẫu ngắm gần
   /// nhất. `nil` là chưa đếm lượt nào, hoặc ARKit không giao đám mây điểm.
   ///
@@ -954,6 +1077,13 @@ final class ArMeasureSession: NSObject {
   private var lastAimRayAngleDeg: Double?
   private var lastAimPlaneId: String?
   private var lastFeatureCensus: ArFeatureCensus?
+  /// Đầu mút đang nắm ở lượt bắn TRƯỚC — mốc của bộ nén.
+  ///
+  /// Mọi đường ĐỔI nó hôm nay đều `publish(force: true)`, nên dòng này trông
+  /// thừa. Nó không thừa: "đều force" là một tính chất của SÁU chỗ gọi, không
+  /// phải của trường này, và chỗ thứ bảy quên `force` sẽ làm cái nút buông trên
+  /// màn đóng băng ở giá trị cũ — một cái nút nói dối, không lỗi nào nổ.
+  private var lastGrabbedPointIndex: Int?
   private var lastMm: Double?
   private var lastEmitAt: TimeInterval = 0
 
@@ -1020,6 +1150,10 @@ final class ArMeasureSession: NSObject {
   /// Dừng hẳn. Gọi từ lệnh kênh `dispose`.
   func stop() {
     guard !isStopped else { return }
+    // Đường buông AN TOÀN, và là đường cuối cùng còn chạy được: sau dòng dưới
+    // mọi lệnh đều trả `notReady`. Buông ở đây để điểm được chốt đúng một lần
+    // theo đúng một luật, thay vì biến mất cùng phiên.
+    releasePoint()
     isStopped = true
     stopSessionOnly()
     output = nil
@@ -1358,20 +1492,15 @@ final class ArMeasureSession: NSObject {
   /// vừa dời bị chính callback ấy xoá đi.
   func movePoint(at index: Int) -> ArMeasureMoveResult {
     guard !isStopped else { return .notReady }
+    // Một lệnh dời trong lúc đang NẮM là app đang đi hai đường cùng lúc. Buông
+    // trước, rồi mới dời: bỏ quãng nắm lại phía sau là để đầu mút tiếp tục bám
+    // theo tia SAU cú dời, và người dùng thấy điểm mình vừa đặt lại trôi đi.
+    releasePoint()
     guard anchors.indices.contains(index) else { return .noSuchPoint }
     guard Self.reticleIsMeaningful(currentStatus()) else { return .notReady }
     guard let hit = raycastFromReticle() else { return .missed }
 
-    let old = anchors[index]
-    let moved = ARAnchor(
-      name: "headless_ar_measure.point", transform: hit.result.worldTransform)
-
-    anchors[index] = moved
-    pointDiagnostics.removeValue(forKey: old.identifier)
-    pointDiagnostics[moved.identifier] = makeDiagnostics(for: hit)
-
-    sceneView.session.remove(anchor: old)
-    sceneView.session.add(anchor: moved)
+    replacePoint(at: index, with: hit, diagnostics: makeDiagnostics(for: hit))
 
     // `force` vì đây là một lượt ĐỔI TRẠNG THÁI, cùng lối với [placePoint] và
     // [undoPoint]: số đo phải đổi NGAY ở cú chạm, không đợi nhịp 15 Hz và không
@@ -1381,12 +1510,185 @@ final class ArMeasureSession: NSObject {
     return .moved
   }
 
+  /// Chốt điểm thứ [index] vào chỗ của một lượt trúng, kèm khối lai lịch của
+  /// chính lượt ấy.
+  ///
+  /// **Một hàm, HAI chỗ gọi** — một nhát [movePoint(at:)], và cú buông ở cuối
+  /// một quãng kéo ([releasePoint]). Hai bản chép lệch nhau thì một đường gỡ
+  /// anchor cũ còn đường kia quên, hoặc một đường thay khối chẩn đoán còn đường
+  /// kia để nguyên khối của lần chấm trước — và cả hai hỏng CÂM.
+  ///
+  /// `ARAnchor` MỚI chứ không sửa anchor cũ tại chỗ: `ARAnchor.transform` là
+  /// readonly, và tài liệu của Apple bảo bỏ anchor cũ rồi thêm anchor mới.
+  /// Anchor cũ được gỡ khỏi phiên — không gỡ là để lại một anchor mồ côi cho
+  /// mỗi lượt chốt, và nó tích lại IM LẶNG vì `ArMeasureNodeSuppressor` không
+  /// dựng node cho anchor nào.
+  ///
+  /// Mảng `anchors` được sửa TRƯỚC lời gọi `remove`, cùng lối với [undoPoint]:
+  /// `session(_:didRemove:)` sẽ nổ sau đó với định danh CŨ, và lúc ấy định danh
+  /// ấy không còn trong mảng nên lượt gọi thành một phép rỗng. Đảo lại là điểm
+  /// vừa chốt bị chính callback ấy xoá đi.
+  ///
+  /// Lai lịch nhận từ NGOÀI chứ không tự dựng, và đó là cả điểm của tham số
+  /// `diagnostics`: ở cú buông, khối đúng là khối đã đo tại khung hình sinh ra
+  /// `hit` — không phải khối dựng lại ở lúc buông, khi camera đã ở một tư thế
+  /// khác. Xem [ArDragState.diagnostics].
+  private func replacePoint(
+    at index: Int, with hit: ArSurfaceHit, diagnostics: ArPointDiagnostics
+  ) {
+    let old = anchors[index]
+    let moved = ARAnchor(
+      name: "headless_ar_measure.point", transform: hit.result.worldTransform)
+
+    anchors[index] = moved
+    pointDiagnostics.removeValue(forKey: old.identifier)
+    pointDiagnostics[moved.identifier] = diagnostics
+
+    sceneView.session.remove(anchor: old)
+    sceneView.session.add(anchor: moved)
+  }
+
+  // MARK: - Nắm, kéo, buông
+
+  /// Mở một quãng NẮM trên điểm thứ [index].
+  ///
+  /// Từ khung hình kế tiếp, điểm ấy bám theo giao điểm của tia tâm ngắm — mỗi
+  /// khung hình, trong CÙNG lượt dò mà tâm ngắm đã chạy ([stepDrag(now:probe:)]).
+  /// Không có lượt raycast thứ hai nào, và không có lượt gọi kênh nào: cả quãng
+  /// kéo sống ở tầng Swift.
+  ///
+  /// **Vì sao không để app tự gọi [movePoint(at:)] liên tục.** Nó cho ra đúng
+  /// hình ấy trên màn, nên nó không có triệu chứng nào ngoài hoá đơn pin: 30
+  /// lượt qua kênh nền mỗi giây, 30 lượt gỡ-và-thêm `ARAnchor` vào phiên ARKit,
+  /// và 30 `ArMeasureMoveResult` không ai đọc.
+  ///
+  /// **Thứ tự bốn lượt kiểm LÀ hợp đồng**, cùng luật với [placePoint] và
+  /// [movePoint(at:)]: mỗi lượt sinh một câu khác nhau và chỉ một câu được nói.
+  /// `alreadyGrabbing` đi TRƯỚC `noSuchPoint` vì nó là câu đúng hơn về việc
+  /// người dùng phải làm tiếp — buông cái đang cầm — và nó đúng bất kể chỉ số
+  /// mới trỏ vào đâu.
+  func grabPoint(at index: Int) -> ArMeasureGrabResult {
+    guard !isStopped else { return .notReady }
+    guard drag == nil else { return .alreadyGrabbing }
+    guard anchors.indices.contains(index) else { return .noSuchPoint }
+    guard Self.reticleIsMeaningful(currentStatus()) else { return .notReady }
+
+    drag = ArDragState(index: index)
+    // `force` vì app dựng cả giao diện "đang nắm" trên trường `grabbedPointIndex`
+    // của mẫu, và một cái nút buông tới sau nửa giây là một cái nút đọc ra như
+    // hỏng.
+    publish(force: true)
+    return .grabbed
+  }
+
+  /// Đóng quãng nắm đang mở và CHỐT điểm.
+  ///
+  /// **Chốt lượt trúng CUỐI của quãng kéo**, không chốt vệt đã làm mượt mà mắt
+  /// vừa nhìn theo, và không bắn một tia mới ở đúng khung hình buông. Ba lối,
+  /// và hai lối kia đều hỏng:
+  ///
+  /// * Chốt vệt đã làm mượt: vị trí và lai lịch lệch nhau đúng bằng độ trễ của
+  ///   bộ lọc. Kéo qua ranh giới hai mặt phẳng rồi buông ngay là một điểm ĐỨNG
+  ///   trên mặt bàn mà KHAI định danh của sàn — đúng dạng nói dối bằng những
+  ///   con số hợp lệ mà cả tầng chẩn đoán sinh ra để chặn.
+  /// * Bắn một tia mới ở lúc buông: một khung trượt ở đúng khoảnh khắc ấy vứt
+  ///   cả quãng kéo hai giây, và điểm nhảy ngược về chỗ trước khi nắm.
+  ///
+  /// **Lai lịch là của chỗ CUỐI, cả khối**, và nó được ghi tại chính khung hình
+  /// đã đặt điểm tới chỗ ấy — xem [ArDragState.diagnostics]. Dựng lại ở đây là
+  /// gán một góc tia chưa ai bắn cho một điểm đã đứng yên.
+  ///
+  /// `@discardableResult` vì phần lớn chỗ gọi là các đường buông AN TOÀN (dừng
+  /// phiên, tạm dừng, gián đoạn, một lệnh khác dời điểm), và ở đó không ai đọc
+  /// kết quả — nhưng chúng vẫn phải đi qua đúng hàm này để điểm được chốt đúng
+  /// một lần, theo đúng một luật.
+  @discardableResult
+  func releasePoint() -> ArMeasureReleaseResult {
+    guard !isStopped else { return .notReady }
+    guard let state = drag else { return .notGrabbing }
+    drag = nil
+
+    // Không khung nào trúng trong cả quãng, hoặc điểm đã biến mất giữa chừng
+    // (ARKit bỏ anchor): điểm nằm nguyên chỗ cũ, và `unmoved` nói đúng thế.
+    // KHÔNG gộp vào `released` — một câu "đã dời" cho một cú dời chưa xảy ra là
+    // đúng dạng lời nói dối mà cả họ enum này sinh ra để chặn.
+    guard anchors.indices.contains(state.index),
+      let hit = state.hit,
+      let diagnostics = state.diagnostics
+    else {
+      publish(force: true)
+      return .unmoved
+    }
+
+    replacePoint(at: state.index, with: hit, diagnostics: diagnostics)
+    publish(force: true)
+    return .released
+  }
+
+  /// Một bước của quãng kéo: đầu mút đang nắm bám theo lượt dò của khung này.
+  ///
+  /// **Không bắn tia.** [probeReticle] đã bắn đúng một lần cho khung hình này,
+  /// và kết quả truyền vào qua [probe]. Bắn lần thứ hai là hai tia khác nhau
+  /// trong cùng một khung: điểm đi tới một chỗ, tâm ngắm hứa một chỗ khác.
+  ///
+  /// **Tia TRƯỢT thì đầu mút ĐỨNG YÊN** — hàm trả về sớm và không đụng gì.
+  /// Nguyên văn lời đặt hàng: *"một cái thước dây không rơi mất đầu khi tay che
+  /// mất vạch"*. Đặc biệt KHÔNG gọi `filter.miss(at:)`: quãng ôm của bộ lọc hết
+  /// hạn sau 100 ms và trả `nil`, và `nil` ở đây nghĩa là
+  /// [position(ofPointAt:)] rơi về vị trí `ARAnchor` CŨ — tức đầu mút nhảy
+  /// ngược về chỗ trước khi nắm, giữa lúc tay người dùng vẫn đang giữ nó.
+  ///
+  /// App KHÔNG mất tin "tia đang trượt": nó đi ra ngoài nguyên vẹn và đúng nhịp
+  /// qua `aimTarget`/`aimLocked` — và `measured` nằm trong [reticleIsMeaningful]
+  /// từ 0.10.0, nên hai trường ấy còn nói được suốt quãng kéo. Đây là lý do gói
+  /// không thêm một trường thứ hai để báo "đang nắm mà tia trượt".
+  ///
+  /// Trả `true` khi đã bước — chỗ gọi dùng nó để `publish`, vì số đo đổi ở mỗi
+  /// bước mà KHÔNG có anchor nào đổi, nên không đường nào khác kích được lượt
+  /// bắn ấy. Bộ nén của [publish] vẫn giữ nguyên trần 15 Hz và ngưỡng 0,5 mm.
+  private func stepDrag(now: TimeInterval, probe: ArReticleProbe) -> Bool {
+    guard var state = drag else { return false }
+    guard case .hit(_, let surface, _, _, _, _) = probe else { return false }
+
+    let column = surface.result.worldTransform.columns.3
+    state.filter.hit(
+      SIMD3<Float>(column.x, column.y, column.z), at: now)
+    state.hit = surface
+    // Ghi lai lịch ở MỖI bước, không đợi lúc buông — xem [ArDragState.diagnostics].
+    state.diagnostics = makeDiagnostics(for: surface)
+    drag = state
+    return true
+  }
+
+  /// Vị trí ĐANG VẼ của điểm thứ [index].
+  ///
+  /// Một chỗ đọc DUY NHẤT cho cả hình vẽ ([currentMarks]) lẫn con số
+  /// ([currentDistanceMm]). Hai phép tra chép tay lệch nhau thì hình bám theo
+  /// tia trong khi con số tính trên `ARAnchor` chưa đổi — đúng cái "số và hình
+  /// nói hai chuyện khác nhau" mà cả đường dời đầu mút sinh ra để đóng, chỉ lật
+  /// ngược chiều.
+  ///
+  /// Chỉ điểm ĐANG NẮM mới có vị trí che; mọi điểm khác đọc thẳng từ anchor.
+  private func position(ofPointAt index: Int) -> SIMD3<Float> {
+    if let drag, drag.index == index, let point = drag.filter.point {
+      return point
+    }
+    let column = anchors[index].transform.columns.3
+    return SIMD3<Float>(column.x, column.y, column.z)
+  }
+
   /// Bỏ điểm chấm gần nhất. Không có điểm nào thì không làm gì.
   ///
   /// Không trả về gì, khác với [placePoint]: app đã biết nó đang có mấy điểm
   /// (từ chính luồng trạng thái), nên "hoàn tác lúc chưa có điểm nào" là một
   /// chuyện app tự chặn được, còn "raycast trượt" thì không.
   func undoPoint() {
+    // Buông TRƯỚC khi bỏ điểm: nếu điểm bị bỏ chính là điểm đang nắm thì chỉ số
+    // trong tay trỏ vào một chỗ trống ngay sau dòng dưới, và nếu không phải nó
+    // thì quãng nắm vẫn phải kết thúc — người dùng vừa bấm một lệnh đổi danh
+    // sách điểm, và giữ tay lại trên một danh sách vừa đổi là giữ một thứ họ
+    // không còn đang nhìn.
+    releasePoint()
     guard !isStopped, let last = anchors.popLast() else { return }
     pointDiagnostics.removeValue(forKey: last.identifier)
     sceneView.session.remove(anchor: last)
@@ -1409,6 +1711,10 @@ final class ArMeasureSession: NSObject {
   /// Tạm dừng camera, GIỮ hai điểm.
   func pause() {
     guard !isStopped, !isPaused else { return }
+    // Đường buông AN TOÀN. Màn rời khỏi mắt người dùng thì tâm ngắm không còn
+    // trong tay họ nữa; giữ quãng nắm qua một quãng không ai điều khiển là để
+    // lượt `resume` kéo đầu mút tới một chỗ chưa ai ngắm.
+    releasePoint()
     isPaused = true
     cancelRelocalizationWatch()
     sceneView.session.pause()
@@ -1903,7 +2209,12 @@ final class ArMeasureSession: NSObject {
     // Quãng còn lại, thứ duy nhất tia này nuôi là một cờ boolean, và mắt người
     // không đọc nổi quá mười lần mỗi giây.
     let hasLiveSegment = anchors.count == 1
-    guard hasLiveSegment || now - lastAimProbeAt >= Self.aimProbeIntervalSeconds
+    // Đang NẮM một đầu mút thì nó cũng là một đầu sống, và nó cần đúng thứ mà
+    // nhánh trên cần: mỗi khung hình. Ở `measured` lưới 10 Hz cắt nó xuống sáu
+    // khung một bước, và một đầu mút bị kéo mà chỉ nhích 10 lần mỗi giây đọc ra
+    // đúng cái "nhích được một khoảng" mà cả cặp lệnh nắm/buông đi bỏ.
+    guard hasLiveSegment || drag != nil
+      || now - lastAimProbeAt >= Self.aimProbeIntervalSeconds
     else { return .skipped }
     lastAimProbeAt = now
 
@@ -1937,6 +2248,9 @@ final class ArMeasureSession: NSObject {
     let camColumn = frame.camera.transform.columns.3
     return .hit(
       point: point,
+      // Kết quả THÔ của chính lượt bắn này đi kèm, cho quãng nắm — xem
+      // [ArReticleProbe.hit] và [stepDrag(now:probe:)].
+      surface: hit,
       target: Self.raycastTarget(of: hit.result),
       overshootMm: hit.overshootMm,
       rayAngleDeg: Self.rayAngleDeg(
@@ -2054,7 +2368,7 @@ final class ArMeasureSession: NSObject {
       lastAimSampleAt = 0
     case .skipped:
       break
-    case .hit(_, let target, let overshootMm, let rayAngleDeg, let planeId):
+    case .hit(_, _, let target, let overshootMm, let rayAngleDeg, let planeId):
       guard now - lastAimSampleAt >= Self.aimProbeIntervalSeconds else { break }
       lastAimSampleAt = now
       // Trúng mà ARKit trả một tầng lạ (một giá trị thêm ở bản iOS sau) vẫn là
@@ -2205,21 +2519,26 @@ final class ArMeasureSession: NSObject {
   /// bấm sinh ra nó. Dò lại lúc vẽ là hỏi một câu KHÁC — "chỗ này BÂY GIỜ là
   /// tầng gì" — rồi trả lời nó như thể đó là lai lịch của cú bấm cũ.
   private func currentMarks() -> [ArMeasureMark] {
-    anchors.map { anchor in
-      let column = anchor.transform.columns.3
+    anchors.indices.map { index in
+      let anchor = anchors[index]
       return ArMeasureMark(
-        position: SIMD3<Float>(column.x, column.y, column.z),
+        // Qua [position(ofPointAt:)] chứ không đọc thẳng `anchor.transform`:
+        // một điểm ĐANG NẮM nằm ở chỗ tia vừa trúng, không ở chỗ anchor của nó
+        // — anchor chỉ được thay ở lúc buông.
+        position: position(ofPointAt: index),
         isExtrapolated:
           pointDiagnostics[anchor.identifier]?.target == .existingPlaneInfinite)
     }
   }
 
   /// Khoảng cách giữa hai điểm, tính bằng milimét. `nil` khi chưa đủ hai điểm.
+  ///
+  /// Đọc vị trí qua CÙNG hàm mà [currentMarks] dùng. Hai phép tra chép tay lệch
+  /// nhau là con số đứng im suốt quãng kéo trong khi hình đã chạy theo tia —
+  /// đúng cái hiểu nhầm mà cả đường dời đầu mút sinh ra để đóng, chỉ lật ngược.
   private func currentDistanceMm() -> Double? {
     guard anchors.count == 2 else { return nil }
-    let a = anchors[0].transform.columns.3
-    let b = anchors[1].transform.columns.3
-    return distanceMm(from: SIMD3(a.x, a.y, a.z), to: SIMD3(b.x, b.y, b.z))
+    return distanceMm(from: position(ofPointAt: 0), to: position(ofPointAt: 1))
   }
 
   /// Khoảng cách giữa hai điểm bất kỳ, milimét.
@@ -2450,6 +2769,14 @@ final class ArMeasureSession: NSObject {
     // khoảnh khắc không có lượt ngắm nào.
     let featureCensus = Self.reticleIsMeaningful(status) ? self.featureCensus : nil
 
+    // Đầu mút đang nắm. KHÔNG gác theo `status`, khác hẳn ba khối trên, và đó
+    // là chủ đích: ba khối kia suy từ một lượt raycast, nên chúng hết nghĩa lúc
+    // tia hết nghĩa. Quãng nắm thì không — nó là một trạng thái của PHIÊN, và
+    // app dựng cả giao diện "đang nắm đầu A, bấm đây để buông" lên trường này.
+    // Gác nó theo trạng thái là cái nút buông biến mất ở đúng lúc phiên rung
+    // tay, và người dùng không có đường nào thoát khỏi quãng nắm.
+    let grabbedPointIndex = drag?.index
+
     // `limitedReason` và `aimTarget` nằm trong điều kiện gộp cùng `status`, và
     // cả hai vì cùng một lý do: bộ nén ở dưới neo vào "số đo đổi quá 0,5 mm",
     // mà cả hai khoá này đổi ĐƯỢC trong khi số đo không đổi một chút nào.
@@ -2516,6 +2843,7 @@ final class ArMeasureSession: NSObject {
     // như khối `video`.
     if !force, status == lastStatus, limitedReason == lastLimitedReason,
       aimTarget == lastAimTarget, featureCensus == lastFeatureCensus,
+      grabbedPointIndex == lastGrabbedPointIndex,
       aimOvershootMm == lastAimOvershootMm,
       aimRayAngleDeg == lastAimRayAngleDeg,
       aimPlaneId == lastAimPlaneId
@@ -2598,6 +2926,17 @@ final class ArMeasureSession: NSObject {
     if let aimPlaneId {
       sample["aimPlaneId"] = aimPlaneId
     }
+    // Đầu mút đang nắm. Vắng khoá nghĩa là KHÔNG nắm gì — đúng mặc định bên
+    // Dart, và đúng hành vi của mọi bản trước cặp lệnh này.
+    //
+    // Đi ra ngoài chứ không để app tự nhớ từ giá trị trả về của `grabPoint`:
+    // gói TỰ buông ở những đường app không gây ra — gián đoạn, `pause`,
+    // `reset`, `dispose`, một lệnh khác dời điểm, hay ARKit bỏ chính cái anchor
+    // đang nắm. App nhớ một mình thì sau những lượt ấy nó còn vẽ "đang nắm đầu
+    // A" cho một quãng đã kết thúc, và cái nút buông không buông gì cả.
+    if let grabbedPointIndex {
+      sample["grabbedPointIndex"] = grabbedPointIndex
+    }
     // Chẩn đoán đi kèm mọi mẫu có ít nhất MỘT điểm, và nó nằm ở đây — TRƯỚC
     // `if let mm` — chứ không nằm trong đó. Nhét vào trong là chỉ gửi khi đã đủ
     // hai điểm, mà điểm ĐẦU mới là chỗ giả thuyết "chấm sai điểm đầu" phải
@@ -2670,6 +3009,7 @@ final class ArMeasureSession: NSObject {
     lastAimRayAngleDeg = aimRayAngleDeg
     lastAimPlaneId = aimPlaneId
     lastFeatureCensus = featureCensus
+    lastGrabbedPointIndex = grabbedPointIndex
     lastMm = mm
     lastEmitAt = now
     lastSample = sample
@@ -2760,6 +3100,11 @@ final class ArMeasureSession: NSObject {
     anchors.removeAll()
     pointDiagnostics.removeAll()
     lastMm = nil
+    // Quãng nắm chết cùng danh sách điểm, và ở đây KHÔNG chốt gì — chốt một
+    // điểm vào một danh sách vừa bị xoá là thêm lại đúng cái điểm mà `reset`
+    // vừa bỏ. Cùng lẽ với lời xoá cứng của `livePoint` ngay dưới: chỗ cũ không
+    // sai vì chưa dò lại được, nó sai vì cái thế giới nó đo trong đó đã hết.
+    drag = nil
     // Đầu sống của đoạn thẳng đọc từ lượt dò của khung hình, và `reset()` dựng
     // lại cả hệ toạ độ — điểm của lượt dò trước nằm trong hệ toạ độ CŨ.
     //
@@ -2798,6 +3143,15 @@ extension ArMeasureSession: ARSessionDelegate {
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
+    // Đường buông AN TOÀN. Cuộc gọi tới, Control Center, app xuống nền: tâm
+    // ngắm không còn trong tay người dùng, và quãng gián đoạn dài bao lâu thì
+    // không ai biết. Giữ quãng nắm qua đó là để lượt bám lại — có thể sau một
+    // lượt nối lại hệ toạ độ — kéo đầu mút tới một chỗ chưa ai ngắm.
+    //
+    // Chốt chứ không vứt: lượt trúng cuối được ghi lúc ARKit còn bám BÌNH
+    // THƯỜNG ([probeReticle] không nhận lượt trúng nào ngoài ba trạng thái ấy),
+    // nên nó là một quan sát tốt, không phải một mảnh của lúc hỏng.
+    releasePoint()
     isInterrupted = true
     cancelRelocalizationWatch()
     publish(force: true)
@@ -2888,7 +3242,22 @@ extension ArMeasureSession: ARSessionDelegate {
     cameraIntrinsics = ArCameraIntrinsics(camera: frame.camera)
 
     let probe = probeReticle(now: now, frame: frame)
+    // Bước kéo đi TRƯỚC mọi thứ đọc vị trí điểm: lớp phủ, hình vẽ SceneKit và
+    // con số đều lấy vị trí qua [position(ofPointAt:)], nên bước sau chúng là
+    // vẽ một khung bằng toạ độ của khung trước — đầu mút trễ đúng một khung
+    // hình sau tâm ngắm, suốt quãng kéo.
+    //
+    // `||` chứ không `|`: [refreshAimTarget] có tác dụng phụ (nó ghi bốn trường
+    // ngắm và phép đếm vân), nên nó phải chạy ở MỌI khung. Viết
+    // `stepDrag(...) || refreshAimTarget(...)` là một khung kéo trúng sẽ nhảy
+    // qua cả lượt cập nhật tâm ngắm.
+    let stepped = stepDrag(now: now, probe: probe)
     var shouldPublish = refreshAimTarget(now: now, frame: frame, probe: probe)
+    // Số đo đổi ở mỗi bước kéo mà KHÔNG anchor nào đổi, nên không đường nào
+    // khác kích được lượt bắn ấy — `adoptUpdatedAnchors` ngay dưới không thấy
+    // gì. Thiếu dòng này thì đoạn thẳng bám theo tay còn CON SỐ ở dải đáy đứng
+    // im suốt quãng kéo.
+    if stepped { shouldPublish = true }
 
     // Phần số đo vẫn chặn y như cũ, chỉ là chặn SAU lượt dò chứ không trước.
     // Không giữ `frame` lại quá lời gọi này: giữ một `ARFrame` là chặn ARKit
@@ -2925,6 +3294,11 @@ extension ArMeasureSession: ARSessionDelegate {
     self.anchors.removeAll { removed.contains($0.identifier) }
     for id in removed { pointDiagnostics.removeValue(forKey: id) }
     guard self.anchors.count != before else { return }
+    // Danh sách vừa ngắn đi, nên CHỈ SỐ đang nắm có thể đã trỏ sang một điểm
+    // khác. Buông cứng, không chốt: chốt theo một chỉ số đã trượt là dời đúng
+    // cái đầu mút người dùng không hề chạm vào. App biết vì `grabbedPointIndex`
+    // của mẫu ngay dưới về `nil`.
+    drag = nil
     if self.anchors.count < 2 { lastMm = nil }
     publish(force: true)
   }
