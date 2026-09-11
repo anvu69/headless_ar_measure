@@ -1964,44 +1964,54 @@ final class ArMeasureSession: NSObject {
 
   // MARK: - Chụp khung hình
 
-  /// Ghi khung hình camera hiện tại ra một tệp JPEG trong thư mục TẠM, và trả
-  /// đường dẫn của nó. Không có khung nào để ghi thì trả `nil`.
+  /// Ghi ảnh của CẢNH hiện tại ra một tệp JPEG trong thư mục TẠM, và trả đường
+  /// dẫn của nó. Không có gì để ghi thì trả `nil`.
   ///
-  /// **Khung THUẦN.** Không có hai chấm, không có đoạn thẳng, không có một chữ
-  /// nào. Ba lý do, và lý do thứ ba là lý do thật:
+  /// **Ảnh của CẢNH, không phải khung camera thuần.** Đây là một lượt LẬT so
+  /// với 0.3.0–0.12.0, và lý do lật nằm ở chỗ khác đã đổi: đường kẻ, hai chấm
+  /// và viên số nay đều là node trong cảnh này. Nên `snapshot()` cho ra đúng
+  /// thứ người dùng vừa nhìn **theo định nghĩa**, chứ không theo một phép dựng
+  /// lại ở tầng Dart từ toạ độ đã chiếu.
   ///
-  /// * `ARSCNView.snapshot()` trả về đúng thứ đang hiện, kể cả hướng dẫn quét
-  ///   bề mặt của Apple — một tấm thẻ chữ trắng chình ình giữa ảnh;
-  /// * hình đo của SceneKit không mang con số, mà con số mới là thứ người ta
-  ///   chụp ảnh để giữ;
-  /// * app đã có sẵn một lớp phủ Dart vẽ con số ấy, và nó phải là lớp phủ DUY
-  ///   NHẤT — hai lớp vẽ cùng một phép đo, lệch nhau một nhịp, là thứ nhìn ra
-  ///   ngay trên ảnh tĩnh.
+  /// Lý lẽ cũ — "khung phải THUẦN vì con số nằm ở lớp phủ Dart" — chết cùng
+  /// lúc với lớp phủ ấy. Nó để lại một bản cài THỨ HAI của cùng một phép vẽ ở
+  /// app, với bộ lỗi riêng và với ca kiểm sinh ra chỉ để canh hai bản không
+  /// trôi khỏi nhau.
   ///
-  /// **Chiều ảnh nướng thẳng vào điểm ảnh.** `capturedImage` luôn nằm theo
-  /// cảm biến (ngang, gốc ở góc trên-trái của cảm biến) bất kể máy đang cầm
-  /// thế nào, nên ảnh phải đi qua đúng phép biến đổi mà ARKit dùng để vẽ nền
-  /// camera lên màn: [ARFrame.displayTransform]. Không nướng thì tệp chỉ đúng
-  /// chiều ở những trình xem chịu đọc cờ EXIF — và người nhận ảnh ở một máy
-  /// khác không chắc dùng trình xem nào.
+  /// **Ba thứ KHÔNG lọt vào ảnh, và cả ba vì cùng một lẽ.** Hồng tâm và vành
+  /// sáng đầu mút do app vẽ ở tầng Flutter; hướng dẫn quét bề mặt
+  /// (`ARCoachingOverlayView`) là một **subview** của `sceneView`. `snapshot()`
+  /// dựng CẢNH qua bộ dựng hình của SceneKit và không đi qua `drawHierarchy`,
+  /// nên cây UIView nằm ngoài khuôn ảnh. Cảnh chỉ chứa `measureNodes.root`.
   ///
-  /// Cỡ ảnh bằng cỡ KHUNG NGẮM nhân hệ số điểm ảnh, nên toạ độ màn mà kênh lớp
-  /// phủ bắn ra (đơn vị point) quy sang toạ độ ảnh bằng đúng một phép nhân.
-  /// Ảnh 12 MP đầy đủ của cảm biến thì không: nó rộng hơn khung ngắm theo một
-  /// tỉ lệ khác, và lớp phủ vẽ lên đó sẽ lệch khỏi thứ người dùng vừa nhìn.
+  /// **Cỡ ảnh đổi, và đó là một đánh đổi đã chốt.** `snapshot()` dựng ở cỡ
+  /// KHUNG NGẮM nhân hệ số điểm ảnh của view — chừng 3,6 triệu điểm ảnh trên
+  /// một iPad @2x, thay cho 8,3 triệu của khuôn hình camera. Đổi lấy đúng thứ
+  /// đang thấy. Và tỉ lệ point → điểm ảnh giữ nguyên như cũ, nên toạ độ mà
+  /// kênh lớp phủ bắn ra (point) vẫn quy sang toạ độ ảnh bằng đúng một phép
+  /// nhân.
+  ///
+  /// **Luồng chính.** `SCNView.snapshot()` đọc thẳng bộ dựng hình của view.
+  /// Gọi từ luồng khác không ném lỗi nào — nó trả một tấm ảnh đen, hoặc phá
+  /// lượt dựng hình đang chạy.
   func captureFrame() -> String? {
-    guard !isStopped, let frame = sceneView.session.currentFrame else { return nil }
+    if Thread.isMainThread { return captureSceneOnMain() }
+    return DispatchQueue.main.sync(execute: captureSceneOnMain)
+  }
+
+  /// Thân của [captureFrame], đã đứng trên luồng chính.
+  private func captureSceneOnMain() -> String? {
+    // `currentFrame` là cổng LIVENESS, không phải nguồn điểm ảnh: phiên chưa
+    // chạy thì `snapshot()` vẫn trả về một tấm ảnh — đen kịt — và một tệp đen
+    // trông y hệt một tệp thật cho tới lúc mở ra xem.
+    guard !isStopped, sceneView.session.currentFrame != nil else { return nil }
 
     let viewport = sceneView.bounds.size
     guard viewport.width > 0, viewport.height > 0 else { return nil }
-    let scale = sceneView.contentScaleFactor > 0 ? sceneView.contentScaleFactor : 1
 
     guard
-      let data = Self.jpegData(
-        from: frame,
-        viewport: viewport,
-        scale: scale,
-        orientation: currentInterfaceOrientation())
+      let image = Self.bakedUp(sceneView.snapshot()),
+      let data = Self.jpegData(from: image)
     else { return nil }
 
     // Thư mục TẠM, và tên ngẫu nhiên. Gói không biết app muốn cất ảnh ở đâu,
@@ -2018,59 +2028,43 @@ final class ArMeasureSession: NSObject {
     return url.path
   }
 
-  /// Hướng GIAO DIỆN, không phải hướng máy.
-  ///
-  /// `displayTransform` hỏi hướng giao diện vì nó tính phép chiếu lên một khung
-  /// ngắm đang nằm theo hướng ấy. Đọc `UIDevice.orientation` là đọc cái máy —
-  /// nó còn có `.faceUp`/`.faceDown`, hai giá trị không nói gì về khung ngắm.
-  private func currentInterfaceOrientation() -> UIInterfaceOrientation {
-    sceneView.window?.windowScene?.interfaceOrientation ?? .portrait
-  }
-
   /// Dựng một lần rồi dùng lại: `CIContext` mang theo cả một đường ống Metal,
   /// và dựng nó ở mỗi cú bấm là một quãng khựng nhìn thấy được.
   private static let renderContext = CIContext(options: nil)
 
-  /// Nướng phép xoay vào điểm ảnh rồi nén JPEG.
+  /// Nướng hướng của một `UIImage` vào điểm ảnh và trả `CGImage` của nó.
   ///
-  /// `static` và nhận đủ tham số: không đọc gì từ phiên, nên phép biến đổi này
-  /// đọc được bằng mắt mà không phải dò xem trạng thái nào đang ở giá trị nào.
-  private static func jpegData(
-    from frame: ARFrame,
-    viewport: CGSize,
-    scale: CGFloat,
-    orientation: UIInterfaceOrientation
-  ) -> Data? {
-    var image = CIImage(cvPixelBuffer: frame.capturedImage)
-    let raw = image.extent.size
-    guard raw.width > 0, raw.height > 0 else { return nil }
+  /// `snapshot()` trả `.up` trên mọi máy đã thử, nên nhánh thứ hai gần như
+  /// không chạy. Nó vẫn phải có: một `UIImage` mang hướng khác đi thẳng qua
+  /// `.cgImage` là **rụng mất phép xoay** — ảnh vẫn ra, vẫn đúng tỉ lệ, chỉ
+  /// nằm nghiêng. Đây đúng là dạng hỏng mà luật "không dựa cờ EXIF" nhắm tới,
+  /// chỉ khác cửa vào.
+  ///
+  /// `format.scale = image.scale` chứ không để mặc định: mặc định của
+  /// `UIGraphicsImageRendererFormat()` lấy hệ số của MÀN CHÍNH, không lấy của
+  /// tấm ảnh.
+  private static func bakedUp(_ image: UIImage) -> CGImage? {
+    if image.imageOrientation == .up { return image.cgImage }
 
-    // `displayTransform` làm việc trong hệ ĐƠN VỊ gốc TRÊN-TRÁI, còn `CIImage`
-    // đo bằng điểm ảnh gốc DƯỚI-TRÁI. Nên bốn bước, và hai bước lật là bắt
-    // buộc: bỏ chúng thì ảnh vẫn ra, vẫn đúng tỉ lệ, chỉ lộn ngược.
-    let flip = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -1)
-    let toUnit = CGAffineTransform(scaleX: 1 / raw.width, y: 1 / raw.height)
-    let display = frame.displayTransform(for: orientation, viewportSize: viewport)
-    let width = (viewport.width * scale).rounded()
-    let height = (viewport.height * scale).rounded()
-    let toPixels = CGAffineTransform(scaleX: width, y: height)
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = image.scale
+    format.opaque = true
+    return UIGraphicsImageRenderer(size: image.size, format: format)
+      .image { _ in image.draw(at: .zero) }
+      .cgImage
+  }
 
-    image = image.transformed(
-      by:
-        toUnit
-        .concatenating(flip)
-        .concatenating(display)
-        .concatenating(flip)
-        .concatenating(toPixels))
-    image = image.cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
-    guard !image.extent.isEmpty else { return nil }
+  /// Nén JPEG. Không đổi cỡ, không xoay — cả hai đã xong trước khi vào đây.
+  private static func jpegData(from image: CGImage) -> Data? {
+    let ci = CIImage(cgImage: image)
+    guard !ci.extent.isEmpty else { return nil }
 
-    let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+    let space = ci.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
     guard let space else { return nil }
     // KHÔNG truyền `kCGImagePropertyOrientation`: phép xoay đã nằm trong điểm
     // ảnh, và một cờ hướng cộng thêm là một lượt xoay THỨ HAI ở trình xem nào
     // chịu đọc nó.
-    return renderContext.jpegRepresentation(of: image, colorSpace: space, options: [:])
+    return renderContext.jpegRepresentation(of: ci, colorSpace: space, options: [:])
   }
 
   // MARK: - Raycast phân tầng
@@ -2812,11 +2806,11 @@ final class ArMeasureSession: NSObject {
   /// * **iPad Air M3 (@2x)**: nhãn nằm góc trên bên trái trong khi trung điểm
   ///   đoạn ở giữa màn — chia đôi toạ độ giữa màn ra đúng góc phần tư ấy.
   ///
-  /// Hai máy, hai hệ số, một công thức. Ba chỗ trong tệp này nay cùng một hệ:
+  /// Hai máy, hai hệ số, một công thức. Cả tệp này nay cùng một hệ:
   /// `sceneView.bounds` (tâm ngắm bắn tia) là point, phép chiếu này là point,
-  /// và [captureFrame] **nhân** hệ số điểm ảnh lên để ra ảnh — đó là chỗ DUY
-  /// NHẤT còn được đụng tới `contentScaleFactor`, và nó đổi đơn vị theo chiều
-  /// ngược lại. Đừng "dọn cho nhất quán" hai chỗ ấy về một.
+  /// và từ `0.13.0` [captureFrame] không đụng tới `contentScaleFactor` nữa —
+  /// `SCNView.snapshot()` tự dựng ở hệ số điểm ảnh của view, nên phép đổi đơn
+  /// vị point → điểm ảnh nằm trong chính nó chứ không nằm ở một phép nhân tay.
   ///
   /// `nil` khi điểm nằm ngoài khối nhìn — chủ yếu là **sau lưng camera**. Phép
   /// chiếu vẫn trả về một toạ độ x, y trông hoàn toàn hợp lệ cho những điểm ấy:

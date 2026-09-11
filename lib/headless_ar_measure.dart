@@ -866,8 +866,14 @@ class ArMeasureOverlay {
   /// đoạn nằm ngoài khối nhìn.
   ///
   /// **Đây là một lời KHAI, không phải một lời đề nghị.** Node đã được đặt vào
-  /// chỗ ấy trong cảnh SceneKit rồi; ba con số này chỉ nói ra nó nằm đâu, để một
-  /// tấm ảnh chụp dựng lại được đúng hình ấy trên canvas.
+  /// chỗ ấy trong cảnh SceneKit rồi; ba con số này chỉ nói ra nó nằm đâu.
+  ///
+  /// Người đọc đầu tiên của nó — một tấm ảnh chụp dựng lại hình ấy trên canvas
+  /// — **không còn nữa** từ `0.13.0`: [ArMeasureController.captureFrame] chụp
+  /// chính cảnh, nên tấm ảnh dán đã nằm sẵn trong ảnh. Trường này còn ở đây cho
+  /// người gọi muốn đặt một thứ gì của mình cạnh con số trên màn (một nút, một
+  /// mũi tên chỉ). Nó là mặt công khai không có người đọc trong kho này; bỏ nó
+  /// là một quyết định riêng, không phải một lượt dọn.
   final ArLabelPlacement? label;
 }
 
@@ -1631,8 +1637,9 @@ class ArMeasureController {
   /// **Gói không biết trên ảnh viết gì** — xem [ArLabelImage].
   ///
   /// Chỗ tấm ảnh ĐÃ đứng bắn lên [ArMeasure.overlay] ở mỗi khung
-  /// ([ArMeasureOverlay.label]), để một tấm ảnh chụp dựng lại được đúng hình
-  /// ấy: [captureFrame] trả một khung THUẦN, không có chữ nào.
+  /// ([ArMeasureOverlay.label]) — một lời khai để người gọi biết node nằm đâu
+  /// trên màn. Từ `0.13.0` [captureFrame] chụp CẢNH, nên một tấm ảnh chụp
+  /// không còn phải dựng lại hình ấy bằng tay.
   ///
   /// Gọi bao nhiêu lần cũng được, và app **nên** gọi lại mỗi khi chữ đổi — gói
   /// chỉ dựng lại hình học khi TỈ LỆ tấm ảnh đổi, nên một lượt gửi cùng cỡ chỉ
@@ -1676,18 +1683,29 @@ class ArMeasureController {
   /// một con số trông bình thường mà sai.
   Future<void> resume() => _send('resume');
 
-  /// Ghi khung hình camera hiện tại ra một tệp JPEG trong thư mục TẠM, và trả
+  /// Ghi ảnh của **cảnh** hiện tại ra một tệp JPEG trong thư mục TẠM, và trả
   /// đường dẫn của nó.
   ///
-  /// Khung **THUẦN**: không hai chấm, không đoạn thẳng, không một chữ nào. Gói
-  /// vẽ hai thứ đầu trong SceneKit vì chỉ tầng Swift biết chúng chiếu xuống màn
-  /// ở đâu; nhưng một tấm ảnh thì người gọi hợp lấy, và hợp trên một nền đã có
-  /// sẵn nửa lớp phủ là vẽ đè hai lần lệch một nhịp.
+  /// Ảnh gồm nền camera **cộng mọi thứ neo vào thế giới**: đoạn thẳng, hai đầu
+  /// mút, và tấm ảnh dán ([setLabel]) nếu có. Đúng thứ vừa hiện trên màn, theo
+  /// định nghĩa — không phải theo một phép dựng lại từ toạ độ đã chiếu.
+  ///
+  /// **Đây là một lượt LẬT ở `0.13.0`.** Từ `0.3.0` tới `0.12.0` lệnh này trả
+  /// một khung camera THUẦN, để người gọi tự vẽ lớp phủ lên. Lý lẽ ấy đứng
+  /// được khi con số còn nằm ở tầng Flutter; từ `0.12.0` nó là một node trong
+  /// cảnh, nên một khung thuần buộc người gọi giữ một bản cài THỨ HAI của cùng
+  /// một phép vẽ.
+  ///
+  /// Thứ **không** vào ảnh: hướng dẫn quét bề mặt của Apple
+  /// (`ARCoachingOverlayView` là một subview, và lượt chụp dựng CẢNH chứ không
+  /// dựng cây UIView), cùng mọi thứ người gọi vẽ ở tầng Flutter phía trên
+  /// [ArMeasureView] — hồng tâm, nút bấm, dải chữ.
   ///
   /// Cỡ ảnh bằng cỡ **khung ngắm** nhân hệ số điểm ảnh của màn, và chiều ảnh
   /// nướng thẳng vào điểm ảnh (không cờ EXIF). Nên toạ độ mà [ArMeasure.overlay]
   /// bắn ra — cùng khung ngắm ấy, đơn vị point — quy sang toạ độ ảnh bằng đúng
-  /// một phép nhân.
+  /// một phép nhân. Cỡ ấy nhỏ hơn khuôn hình camera (chừng 3,6 MP thay vì 8,3
+  /// MP trên một iPad @2x): đánh đổi có chủ ý, lấy đúng thứ đang thấy.
   ///
   /// `null` nghĩa là KHÔNG có tệp nào: phiên chưa chạy, view đã chết, kênh
   /// hỏng, hay đĩa không ghi được. Không bao giờ ném, và không bao giờ trả một

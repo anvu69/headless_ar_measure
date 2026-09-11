@@ -95,7 +95,7 @@ controller?.dispose();
 | `ArMeasureController.undoPoint()` | Drops the last point |
 | `ArMeasureController.reset()` | Drops both points and rebuilds the coordinate system |
 | `ArMeasureController.pause()` / `.resume()` | Stops and restarts the camera, keeping both points |
-| `ArMeasureController.captureFrame()` | Writes the current camera frame to a JPEG in the temp directory and returns its path, or `null` |
+| `ArMeasureController.captureFrame()` | Writes a snapshot of the **scene** — camera feed plus every world-anchored node — to a JPEG in the temp directory and returns its path, or `null` |
 | `ArMeasureController.dispose()` | **Required.** Stops the session and turns the camera off |
 
 ### The crosshair has to say what it is on
@@ -238,12 +238,13 @@ reads as an error rather than as lower confidence. Shape also survives
 colour-blindness and greyscale, and it can be read on one endpoint alone instead
 of needing both on screen to compare.
 
-`captureFrame()` is still bare, so a saved photo carries the distinction only
-through the overlay **you** draw. Everything you need is already on the samples
-stream — `diagnostics.points[i].target` for each placed end, `aimTarget` for the
-live one. `ArMeasure.overlay` deliberately does not repeat the tier: it would be
-a second path saying the same thing at a different rate, and two such paths
-drift apart.
+Since `0.13.0` `captureFrame()` snapshots the scene, so a saved photo carries
+that distinction by itself — the ring is a node like everything else. If you
+want the tier in *text*, it is on the samples stream:
+`diagnostics.points[i].target` for each placed end, `aimTarget` for the live
+one. `ArMeasure.overlay` deliberately does not repeat the tier: it would be a
+second path saying the same thing at a different rate, and two such paths drift
+apart.
 
 Why the reversal happened at all: on a real device the raw feature-point cloud
 for the whole frame held **26 points, sometimes 2** — around the ray, **1,
@@ -552,32 +553,42 @@ in 3D, "drawn later" alone is not enough.
 Pass `null` to take it off.
 
 `ArMeasureOverlay.label` reports where the node ended up — centre, screen
-rotation (flip included), scale — so a composed photo can redraw it in the same
-place. It is a statement, not a request.
+rotation (flip included), scale. It is a statement, not a request. Its original
+reader was a composed photo redrawing the label by hand; since `0.13.0` that
+reader is gone, and the field stays for callers who want to put something of
+their own next to the number on screen.
 
-### A captured frame is bare on purpose
+### A captured photo is a snapshot of the scene
 
-`captureFrame()` writes the current camera frame — and nothing else — to a JPEG
-in the temp directory. No dots, no segment, no coaching card. `ARSCNView`
-does have a `snapshot()`, and it would have been one line; it returns what is
-on screen, which includes Apple's coaching overlay, and it does not include the
-one thing a person keeps a photo for: the number. Compose on a bare frame and
-everything is drawn once.
+`captureFrame()` writes the **scene** to a JPEG in the temp directory: the
+camera feed plus every world-anchored node — the segment, both endpoints, and
+the label image if you set one. What the user just looked at, by definition,
+rather than by reconstruction.
 
-Note the asymmetry with `setLabel`: on **screen** the number is a node in the
-scene, because that is the only way it can stick to the line. In a **photo**
-there is no scene to stick to, so your app redraws it on a canvas — using
-`ArMeasureOverlay.label` so it lands exactly where it was. Two drawing paths for
-one label, for two different reasons; neither is a leftover.
+Through `0.12.0` this returned a bare camera frame and you composed the drawing
+yourself. That made sense while the number lived in your Flutter layer. Once the
+number became a node (`setLabel`, `0.12.0`), a bare frame forced you to keep a
+**second implementation** of the same drawing, with its own bugs and its own
+tests to keep the two from drifting. `0.13.0` deletes that asymmetry.
 
-Two properties make composing possible at all:
+What does *not* land in the photo: Apple's coaching overlay, because
+`ARCoachingOverlayView` is a **subview** and `SCNView.snapshot()` renders the
+scene rather than the UIView tree; and everything your app draws in Flutter
+above `ArMeasureView` — reticle, buttons, text. The scene holds measurement
+nodes and nothing else.
 
-* the image is the size of the **viewport** times the screen scale, not the
-  sensor's full 12MP — so the point coordinates from `ArMeasure.overlay` map
-  onto it with a single multiply;
-* the rotation is baked into the **pixels** via `ARFrame.displayTransform`, not
-  written as an EXIF orientation flag. The file is upright in any viewer, not
-  only the ones that read the flag.
+Two properties, both unchanged:
+
+* the image is the size of the **viewport** times the screen scale — so the
+  point coordinates from `ArMeasure.overlay` map onto it with a single multiply.
+  That is smaller than the sensor's full 12MP (about 3.6MP against 8.3MP on a
+  2× iPad): a deliberate trade, pixels for fidelity;
+* the rotation is baked into the **pixels**, not written as an EXIF orientation
+  flag. The file is upright in any viewer, not only the ones that read the flag.
+
+The snapshot runs on the main thread — `SCNView.snapshot()` reaches straight
+into the view's renderer, and calling it from anywhere else throws nothing and
+returns black.
 
 The file belongs to the caller: this package never deletes it, and the system
 clears the temp directory on a schedule of its own.

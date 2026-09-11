@@ -1,3 +1,85 @@
+## 0.13.0
+
+`captureFrame()` now photographs the **scene**, not a bare camera frame. No API
+change; the pixels it returns are different.
+
+### Why the reversal
+
+Through `0.12.0` the contract was: the package hands back a bare camera frame,
+the app draws the line, the dots and the number onto it with a canvas, and the
+composed photo is the result. That was right while the number lived in the app's
+Flutter layer.
+
+`0.12.0` moved the number into the scene (`setLabel`). After that, every part of
+the measurement drawing — line, endpoints, label — is a SceneKit node. A bare
+frame then forces the caller to keep a **second implementation** of the same
+drawing: a projection of the midpoint, a mm→point conversion derived from the
+segment itself, a raster floor for thin strokes, a ring-versus-dot rule copied
+out of this repo's Swift. Every visual fix has to land twice, and there has to
+be a test whose only job is to keep the two from drifting apart.
+
+`SCNView.snapshot()` removes the second implementation. The camera feed is the
+scene's background and the measurement nodes are in the scene, so the snapshot
+*is* what the user just looked at — by definition, not by reconstruction.
+
+### What is and is not in the image
+
+In: the camera feed, the segment, both endpoints (filled dot or open ring), and
+the label image if `setLabel` was called.
+
+Out: Apple's coaching overlay. `ARCoachingOverlayView` is added as a **subview**
+of the AR view, and `snapshot()` renders the scene through SceneKit's renderer
+rather than walking the UIView tree — subviews are not drawn. Also out:
+everything the caller draws in Flutter above `ArMeasureView`. The scene's root
+holds `measureNodes.root` and nothing else, and there is now a test that pins
+exactly that — every node added to the scene from here on lands in every photo
+the user takes.
+
+### The trade: resolution
+
+The snapshot is the size of the **viewport** times the view's pixel scale. On a
+2× iPad that is roughly 3.6 megapixels, against 8.3 for the camera's own video
+format. Fewer pixels, in exchange for the frame being exactly what was on
+screen.
+
+The point→pixel ratio is unchanged, so `ArMeasure.overlay` coordinates still map
+onto the image with a single multiply — which is what lets a caller paint
+screen-anchored furniture (a caption bar, a watermark) onto the photo.
+
+### Three details that would have failed silently
+
+* **Main thread.** `SCNView.snapshot()` reaches into the view's renderer. Called
+  from another thread it raises nothing and returns a black image, or corrupts
+  the frame being drawn. `captureFrame()` now runs its body on the main thread,
+  synchronously — the return value of a button press cannot wait on a callback.
+* **Orientation.** The old path baked rotation into pixels via
+  `ARFrame.displayTransform`, because `capturedImage` is sensor-oriented.
+  `snapshot()` is already viewport-oriented and returns `.up` on every device
+  tried, but a `UIImage` carrying any other orientation passed straight through
+  `.cgImage` **drops the rotation** — the file comes out the right size and
+  lying on its side. It is re-baked when needed, with
+  `format.scale = image.scale`: the default of `UIGraphicsImageRendererFormat()`
+  is the *main screen's* scale, not the image's.
+* **No EXIF orientation flag**, same rule as before. A flag is a request that
+  the viewer rotate on the reader's behalf, and not every viewer does.
+
+### `ArMeasureOverlay.label` has no reader left in this repo
+
+The field (`lx`, `ly`, `lrot`, `lscale`) arrived in `0.12.0` so a composed photo
+could redraw the label by hand in the place the node had taken. That composition
+is gone. The field stays — it is a public statement about where a node ended up,
+useful to anyone wanting to put something of their own beside the number — but
+nothing inside this package or its example reads it. Removing it is a separate
+decision, not a cleanup.
+
+### What this cannot be tested for
+
+`snapshot()` needs a running ARKit session and a GPU. There is no test here that
+proves the coaching overlay stays out of a real photo, or that the pixels are
+upright on a device held sideways — only a real device does that. The tests that
+exist pin the mechanism: scene-not-frame, main thread, orientation baked, scale
+preserved, and the scene root holding measurement nodes only.
+
 ## 0.12.0
 
 The measurement label moves **into the scene**. One new command,

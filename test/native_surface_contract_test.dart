@@ -684,18 +684,30 @@ void main() {
       );
     });
 
-    // Chỗ DUY NHẤT còn được đụng tới `contentScaleFactor`, và nó phải còn:
-    // ảnh xuất ra đo bằng ĐIỂM ẢNH, khung lớp phủ đo bằng POINT. Bỏ phép nhân
-    // ở đây "cho nhất quán" với lượt bỏ phép chia ở trên là ra một tấm ảnh nhỏ
-    // bằng 1/2 hay 1/3 khung ngắm — và lớp phủ vẽ đè lên nó lệch đúng chừng ấy.
-    test('ảnh chụp VẪN nhân contentScaleFactor — hai chỗ, hai đơn vị', () {
+    // Ảnh xuất ra đo bằng ĐIỂM ẢNH, khung lớp phủ đo bằng POINT, và tỉ lệ giữa
+    // hai hệ ấy là hệ số điểm ảnh của view. Từ 0.13.0 không còn phép nhân tay
+    // nào — `snapshot()` dựng sẵn ở `contentScaleFactor` của view — nên thứ
+    // phải canh đổi thành: ĐỪNG dựng lại cỡ ảnh ở bất cứ đâu.
+    test('ảnh chụp KHÔNG tự đặt lại cỡ — snapshot() đã ở đúng hệ', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func captureSceneOnMain()'),
+      );
+
       expect(
-        _withoutComments(_swiftMethodBody(sessionSource, 'func captureFrame(')),
-        contains('contentScaleFactor'),
+        than,
+        isNot(contains('contentScaleFactor')),
         reason:
-            'Cỡ ảnh là cỡ khung ngắm (point) NHÂN hệ số điểm ảnh. Đây là phép '
-            'đổi đơn vị thật, ngược chiều với phép chia vừa bị bỏ ở '
-            '`projectToScreen`, và hai chỗ ấy không được nhầm với nhau.',
+            'Nhân thêm một lượt nữa lên một tấm ảnh ĐÃ ở hệ điểm ảnh là ra ảnh '
+            'to gấp hai hay gấp ba khung ngắm — và app quy toạ độ dải đáy sang '
+            'toạ độ ảnh bằng đúng tỉ lệ ấy, nên dải đáy trượt khỏi mép.',
+      );
+      expect(
+        than,
+        isNot(contains('CGAffineTransform')),
+        reason:
+            'Cùng một lỗi viết bằng một phép biến đổi. Ảnh ra khỏi `snapshot()` '
+            'đã đúng cỡ và đúng chiều; mọi phép biến đổi ở đây là một lượt '
+            'thứ hai.',
       );
     });
 
@@ -2577,43 +2589,75 @@ void main() {
     });
   });
 
-  group('chụp khung hình', () {
-    // Cả năm ca dưới đây canh cùng một dạng hỏng: ảnh VẪN ra, tệp VẪN có, và
+  group('chụp ảnh cảnh', () {
+    // Cả bảy ca dưới đây canh cùng một dạng hỏng: ảnh VẪN ra, tệp VẪN có, và
     // thứ sai chỉ lộ ra khi mở ảnh lên xem trên một máy khác.
     test('lệnh khớp từng chữ giữa Swift và Dart', () {
       expect(pluginSource, contains('case "captureFrame":'));
       expect(dartSource, contains("invokeMethod<String>('captureFrame'"));
     });
 
-    test('đọc capturedImage, KHÔNG dùng snapshot() của SceneKit', () {
-      final than = _swiftMethodBody(sessionSource, 'func captureFrame()');
-
-      expect(
-        _withoutComments(sessionSource),
-        contains('CIImage(cvPixelBuffer: frame.capturedImage)'),
-        reason:
-            'khung phải THUẦN: hai chấm và đoạn thẳng là thứ SceneKit vẽ, và '
-            'ảnh cuối dựng lại lớp phủ ấy ở Dart. Lấy cả hai là vẽ đè hai lần.',
-      );
-      expect(
-        _withoutComments(than),
-        isNot(contains('snapshot()')),
-        reason:
-            '`ARSCNView.snapshot()` trả về đúng thứ đang hiện — kể cả hình đo '
-            'của SceneKit lẫn hướng dẫn quét bề mặt của Apple.',
-      );
-    });
-
-    test('ghi ĐÚNG CHIỀU bằng displayTransform, không dựa cờ EXIF', () {
+    test('chụp CẢNH bằng snapshot(), không đọc capturedImage nữa', () {
       final sach = _withoutComments(sessionSource);
 
       expect(
         sach,
-        contains('displayTransform(for:'),
+        contains('sceneView.snapshot()'),
         reason:
-            '`capturedImage` luôn nằm ngang theo cảm biến, bất kể máy đang cầm '
-            'thế nào. Không nướng phép xoay vào điểm ảnh thì ảnh chỉ đúng chiều '
-            'ở những trình xem chịu đọc cờ EXIF.',
+            'Từ 0.13.0 đường kẻ, hai chấm và viên số đều là node trong cảnh, '
+            'nên ảnh của CẢNH là đúng thứ người dùng vừa nhìn — theo định '
+            'nghĩa, chứ không theo một phép dựng lại ở Dart.',
+      );
+      expect(
+        sach,
+        isNot(contains('capturedImage')),
+        reason:
+            'Khung camera THUẦN là nền của bản cài THỨ HAI đã bị bỏ: app vẽ '
+            'lại đường kẻ, hai chấm và viên số bằng canvas từ toạ độ chiếu. '
+            'Giữ đường này lại là mời nó quay về.',
+      );
+      expect(
+        sach,
+        isNot(contains('displayTransform(for:')),
+        reason:
+            'Phép xoay ấy tồn tại vì `capturedImage` nằm theo CẢM BIẾN. '
+            '`snapshot()` dựng theo KHUNG NGẮM, nên xoay thêm một lượt nữa là '
+            'lật ảnh đi một phần tư vòng.',
+      );
+    });
+
+    test('snapshot() chạy trên LUỒNG CHÍNH', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func captureFrame()'),
+      );
+
+      expect(
+        than,
+        contains('Thread.isMainThread'),
+        reason:
+            '`SCNView.snapshot()` đọc thẳng bộ dựng hình của view. Gọi nó từ '
+            'một luồng khác không ném lỗi nào — nó trả một tấm ảnh ĐEN, hoặc '
+            'làm hỏng lượt dựng hình đang chạy.',
+      );
+      expect(
+        than,
+        contains('DispatchQueue.main.sync'),
+        reason:
+            'Nhánh không-phải-luồng-chính phải ĐỢI ảnh chứ không bỏ qua: giá '
+            'trị trả về của một cú bấm nút không chờ được một callback.',
+      );
+    });
+
+    test('ghi ĐÚNG CHIỀU bằng cách nướng hướng, không dựa cờ EXIF', () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(
+        sach,
+        contains('imageOrientation == .up'),
+        reason:
+            '`snapshot()` trả `.up` trên mọi máy đã thử, nhưng một `UIImage` '
+            'mang hướng khác đi thẳng qua `cgImage` là RỤNG mất phép xoay — '
+            'ảnh vẫn ra, vẫn đúng tỉ lệ, chỉ nằm nghiêng.',
       );
       expect(
         sach,
@@ -2624,8 +2668,62 @@ void main() {
       );
     });
 
+    test('lượt nướng hướng GIỮ hệ số điểm ảnh của tấm ảnh', () {
+      expect(
+        _withoutComments(sessionSource),
+        contains('format.scale = image.scale'),
+        reason:
+            '`UIGraphicsImageRendererFormat()` mặc định lấy hệ số của MÀN '
+            'CHÍNH, không lấy của tấm ảnh. Trên một máy mà hai số ấy khác '
+            'nhau, ảnh ra đúng chiều và sai cỡ — và app quy toạ độ lớp phủ '
+            'sang toạ độ ảnh bằng đúng tỉ lệ ấy.',
+      );
+    });
+
+    // Đây là ca giữ cho lượt đổi sang `snapshot()` không kéo theo thứ mà
+    // chính chú thích cũ của `captureFrame` sợ: *"một tấm thẻ chữ trắng chình
+    // ình giữa ảnh"*.
+    //
+    // `snapshot()` dựng CẢNH SceneKit, không dựng cây UIView. Nên lời hứa
+    // "hướng dẫn quét không lọt vào ảnh" quy về đúng một tính chất kiểm được:
+    // lớp hướng dẫn là một SUBVIEW, và cảnh chỉ có node đo.
+    test('hướng dẫn quét là SUBVIEW, nên snapshot() không thấy nó', () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(
+        sach,
+        contains('sceneView.addSubview(coachingOverlay)'),
+        reason:
+            'Nó phải ở cây UIView. `SCNView.snapshot()` dựng cảnh bằng bộ dựng '
+            'hình của SceneKit và KHÔNG đi qua `drawHierarchy`, nên mọi '
+            'subview nằm ngoài ảnh.',
+      );
+      expect(
+        sach,
+        isNot(contains('rootNode.addChildNode(coachingOverlay')),
+        reason:
+            'Đưa hướng dẫn quét vào CẢNH là đưa nó vào ảnh — cùng cửa với hình '
+            'đo.',
+      );
+
+      final vaoCanh = RegExp(
+        r'rootNode\.addChildNode\(([^)]*)\)',
+      ).allMatches(sach).map((m) => m.group(1)!.trim()).toList();
+      expect(
+        vaoCanh,
+        ['measureNodes.root'],
+        reason:
+            'Cảnh chỉ được chứa hình ĐO. Mỗi node thêm vào đây từ nay đi thẳng '
+            'vào mọi tấm ảnh người dùng chụp, và không ca kiểm nào khác nói ra '
+            'điều đó.',
+      );
+    });
+
     test('ảnh nằm ở thư mục TẠM, không nằm trong Documents', () {
-      final than = _swiftMethodBody(sessionSource, 'func captureFrame()');
+      final than = _swiftMethodBody(
+        sessionSource,
+        'private func captureSceneOnMain()',
+      );
 
       expect(
         _withoutComments(than),
