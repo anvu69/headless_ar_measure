@@ -92,6 +92,164 @@ void main() {
     });
   });
 
+  group('điểm ngắm của một quãng nắm', () {
+    /// Khuôn dây CŨ không đổi một chữ.
+    ///
+    /// `grabPoint(0)` là lời gọi của mọi bản trước `0.14.0`, và nó phải gửi
+    /// đúng hai khoá như cũ. Gửi kèm `x`/`y` bằng tâm màn "cho đủ bộ" là một
+    /// lượt đổi hành vi câm: tầng Swift sẽ bắn TIA RIÊNG mỗi khung thay vì ăn
+    /// theo lượt dò của tâm ngắm, và cái giá — một lượt raycast thứ hai mỗi
+    /// khung hình — không ai xin.
+    test('grabPoint không kèm điểm thì gửi đúng khuôn dây cũ', () async {
+      final sent = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel(ArMeasure.methodChannelName),
+            (call) async {
+              sent.add(call);
+              return 'grabbed';
+            },
+          );
+
+      expect(await const ArMeasureController(3).grabPoint(0),
+          ArMeasureGrabResult.grabbed);
+      expect(sent.single.arguments, {'viewId': 3, 'index': 0});
+    });
+
+    /// Điểm đi trên dây thành HAI số `x`/`y`, đơn vị **point**.
+    ///
+    /// Không nhân `devicePixelRatio` ở bất cứ đâu trên đường này: `bounds` của
+    /// bề mặt AR là point, phép chiếu bắn lên `ArMeasureOverlay` là point, và
+    /// con số này phải cùng hệ với chúng — nếu không thì app đọc toạ độ đầu mút
+    /// từ lớp phủ rồi gửi trả lại một toạ độ ở hệ khác.
+    test('grabPoint kèm điểm gửi x/y point, không nhân hệ số điểm ảnh',
+        () async {
+      final sent = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel(ArMeasure.methodChannelName),
+            (call) async {
+              sent.add(call);
+              return 'grabbed';
+            },
+          );
+
+      expect(
+        await const ArMeasureController(3)
+            .grabPoint(1, at: const Offset(120.5, 200.25)),
+        ArMeasureGrabResult.grabbed,
+      );
+      expect(sent.single.arguments, {
+        'viewId': 3,
+        'index': 1,
+        'x': 120.5,
+        'y': 200.25,
+      });
+    });
+
+    test('dragTo gửi x/y và KHÔNG gửi chỉ số', () async {
+      final sent = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel(ArMeasure.methodChannelName),
+            (call) async {
+              sent.add(call);
+              return 'aimed';
+            },
+          );
+
+      expect(
+        await const ArMeasureController(7).dragTo(const Offset(-3, 0.5)),
+        ArMeasureDragResult.aimed,
+      );
+      expect(sent.single.method, 'dragTo');
+      expect(sent.single.arguments, {'viewId': 7, 'x': -3.0, 'y': 0.5});
+    });
+
+    // Bốn kết quả, và `clamped` là giá trị đắt nhất của bộ: ngón tay trượt ra
+    // ngoài mép màn giữa một quãng kéo là chuyện thường, và ở đó gói KẸP điểm
+    // vào biên chứ không coi là trượt. App có quyền biết mình đang kéo một thứ
+    // ghim ở mép.
+    test('dragTo đọc được cả bốn kết quả tầng nền nói', () async {
+      Future<ArMeasureDragResult> drag(Object? reply) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              (call) async => reply,
+            );
+        return const ArMeasureController(1).dragTo(Offset.zero);
+      }
+
+      expect(await drag('aimed'), ArMeasureDragResult.aimed);
+      expect(await drag('clamped'), ArMeasureDragResult.clamped);
+      expect(await drag('notGrabbing'), ArMeasureDragResult.notGrabbing);
+      expect(await drag('notReady'), ArMeasureDragResult.notReady);
+    });
+
+    // Kênh câm về `notReady`, KHÔNG về `notGrabbing` — cùng một luật với
+    // `releasePoint`: "không nắm gì" là một câu về TRẠNG THÁI của một phiên, và
+    // một kênh chết không có phiên nào để nói về. Cũng là giá trị của một bản
+    // Swift cũ hơn lệnh này, nơi `dragTo` rơi vào `FlutterMethodNotImplemented`.
+    test('dragTo không đọc được thì về notReady, không ném', () async {
+      Future<ArMeasureDragResult> drag(
+        Future<Object?> Function(MethodCall) handler,
+      ) async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(
+              const MethodChannel(ArMeasure.methodChannelName),
+              handler,
+            );
+        return const ArMeasureController(1).dragTo(Offset.zero);
+      }
+
+      expect(await drag((_) async => null), ArMeasureDragResult.notReady);
+      expect(await drag((_) async => 'sao chổi'), ArMeasureDragResult.notReady);
+      expect(await drag((_) async => true), ArMeasureDragResult.notReady);
+      expect(
+        await drag((_) async => throw MissingPluginException()),
+        ArMeasureDragResult.notReady,
+      );
+      expect(
+        await drag((_) async => throw PlatformException(code: 'boom')),
+        ArMeasureDragResult.notReady,
+      );
+    });
+
+    // Vì sao trường này phải tồn tại RIÊNG, không đọc nhờ `aimLocked`: từ
+    // `0.14.0` hai thứ ấy nói về HAI TIA khác nhau. `aimLocked` nói về tâm màn
+    // — nơi cú bấm `placePoint` tới — còn cái này nói về tia mà đầu mút đang bị
+    // kéo đi theo. Ngón tay không ở tâm màn thì hai câu ấy khác nhau, và đọc
+    // nhầm là app tô xám cái nút chấm vì một chỗ nó không định chấm.
+    test('grabAimLocked đọc được từ mẫu', () {
+      final sample = ArMeasure.parseSample({
+        'status': 'measured',
+        'grabbedPointIndex': 1,
+        'grabAimLocked': true,
+      });
+
+      expect(sample!.grabAimLocked, isTrue);
+    });
+
+    // Thiếu khoá là "tia của quãng kéo không trúng gì", đúng mặc định an toàn:
+    // một bản Swift cũ hơn trường này không gửi khoá, và ở đó nó cũng không có
+    // đường nào để nắm theo một điểm ngắm riêng.
+    test('thiếu khoá thì grabAimLocked là false', () {
+      final sample = ArMeasure.parseSample({'status': 'measured'});
+
+      expect(sample!.grabAimLocked, isFalse);
+    });
+
+    test('kiểu lạ thì về false, và KHÔNG giết mẫu', () {
+      final sample = ArMeasure.parseSample({
+        'status': 'measured',
+        'grabAimLocked': 'có',
+      });
+
+      expect(sample, isNotNull);
+      expect(sample!.grabAimLocked, isFalse);
+    });
+  });
+
   group('ArMeasureReleaseResult', () {
     // Bốn kết quả, và `unmoved` là giá trị ĐẮT nhất của bộ: người dùng vừa nắm,
     // vừa rê máy một quãng, rồi buông — và điểm vẫn nằm nguyên chỗ cũ vì KHÔNG
@@ -203,6 +361,16 @@ void main() {
       expect(
         _swiftStringEnumCases(swift, 'ArMeasureReleaseResult'),
         ArMeasureReleaseResult.values.map((e) => e.name).toList(),
+      );
+    });
+
+    // Cùng cái bẫy, và ở đây chiều hỏng câm nhất là `clamped`: một chuỗi lệch
+    // làm mọi lượt kéo ra mép màn trả `notReady`, app tưởng kênh chết và bỏ
+    // luôn quãng kéo — trong khi tầng Swift vẫn đang nắm và vẫn đang kéo.
+    test('bốn chuỗi kết quả ĐIỂM NGẮM', () {
+      expect(
+        _swiftStringEnumCases(swift, 'ArMeasureDragResult'),
+        ArMeasureDragResult.values.map((e) => e.name).toList(),
       );
     });
   });

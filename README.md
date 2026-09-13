@@ -444,8 +444,9 @@ disagree with the first, and the point would go somewhere the crosshair did not
 promise.
 
 **A losing ray freezes the end; it does not drop it.** A tape measure does not
-lose its end when your hand covers the marks. No new field reports the miss —
-`aimTarget`/`aimLocked` already do, at their own rate, for the whole span.
+lose its end when your hand covers the marks. `grabAimLocked` reports the miss,
+for the span's own ray — and while the span rides the crosshair (the default),
+it says the same thing `aimLocked` does, because it is the same ray.
 
 **Release pins the drag's last hit, not the smoothed trail you were watching,
 and not a fresh ray fired at the release frame.** Committing the smoothed
@@ -472,6 +473,94 @@ releases; an app keeping its own copy goes on drawing "holding end A" for a span
 that ended. It is deliberately not gated on `status` — a grab is a state of the
 session, not of a raycast, and gating it would make your release button vanish
 during half a second of hand tremor.
+
+### The drag can follow your finger
+
+By default a span rides the crosshair: the endpoint goes where the middle of the
+screen points, and you move it by moving the device. That is half of the gesture
+people expect. The other half, from a real device:
+
+> aim the crosshair at the endpoint, then **hold your finger on the screen and
+> drag** to a new place — or hold the finger still and **pan the camera**, and
+> the endpoint follows that too.
+
+Hand the package the screen point and it fires the span's ray from there:
+
+```dart
+// onPanStart, at the handle the app drew from ArMeasure.overlay
+await controller?.grabPoint(1, at: details.localPosition);
+
+// onPanUpdate — call it as often as the finger moves
+await controller?.dragTo(details.localPosition);
+
+// onPanEnd
+await controller?.releasePoint();
+```
+
+**`at` and `dragTo` take points (logical pixels), in the AR surface's own
+coordinate space, origin top-left** — the same space and unit as
+`ArMeasureOverlay.pointA`/`pointB`. An `Offset` you read off the overlay can be
+handed straight back. Do **not** multiply by `devicePixelRatio`: the package
+divided its projected output by the screen scale from `0.2.0` to `0.9.0`, the
+label hung off the segment by an integer factor on two devices with two
+different scales, and the whole file has been in points ever since.
+
+**This is not the repeated-`movePoint` trap.** That one is expensive because
+every call is a raycast plus an `ARAnchor` remove-and-add. `dragTo` writes one
+`CGPoint` into the grab state — no ray, no anchor, no sample emitted. The ray
+still fires once per **frame**, whether you called ten times between two frames
+or none.
+
+**Do not compute the 3-D point in Dart.** Where an endpoint belongs is the
+intersection of a *ray* with a *real plane in the scene*. Deriving it from how
+far the finger slid is a 2-D interpolation standing in for a 3-D problem:
+correct when the plane faces the ray, wrong in proportion to the angle, and
+worst at exactly the grazing shot this package already ships a warning for
+(`aimRayAngleDeg`).
+
+**A finger off the edge of the surface is clamped to the edge, not treated as a
+miss**, and `dragTo` returns `ArMeasureDragResult.clamped` to say so. Freezing
+instead would kill the second half of the gesture — a pinned finger could no
+longer drag the endpoint by panning. And firing from *outside* the viewport,
+which looks like the honest option, is the worst of the three: that ray points
+somewhere the camera has never observed, so neither the geometry tier nor the
+estimated-plane tier has anything to hit, and the only tier left to answer is
+extrapolation — a detected plane stretched past its own boundary, returning a
+perfectly plausible coordinate on a surface the camera cannot see.
+
+**Read `grabAimLocked`, not `aimLocked`, for a finger-driven span.** From
+`0.14.0` those two flags describe **two different rays** the moment a span has
+its own aim point: `aimLocked` is about the middle of the screen — where
+`placePoint()` would land — and `grabAimLocked` is about where the endpoint is
+being dragged. They coincide only in the default case, a `grabPoint` with no
+`at`.
+
+**The crosshair, `placePoint` and `movePoint` are untouched.** A tap still lands
+where the crosshair points, whatever the finger is doing. This is an added path,
+not a changed one.
+
+**The aim point lives and dies with the span.** It is a field of the grab state,
+so `releasePoint()` erases it — and so does every route the package releases on
+by itself. There is no `aimAt(null)` to forget, because there is no independent
+lifetime to forget it in; the alternative, a session-level aim that outlives the
+grab, hands the *next* span the *previous* finger's position on its very first
+frame. There is also no way back to the crosshair mid-span: let go and grab
+again without `at`, which is the honest description of what that is anyway.
+
+**Only a crosshair-riding span forces the probe to run every frame.** A span
+with its own aim point fires its own ray in the drag step, so the crosshair
+drops back to its 10 Hz sampling grid instead of costing a second raycast per
+frame that nothing reads.
+
+**The smoothing filter stays, for both kinds of span.** The noise it exists to
+kill is tier switching — three ray tiers tried in order, so two consecutive
+frames can return two different *surfaces*, both reporting a hit, and the point
+jumps centimetres while the hand *and* the finger sit still. That is true
+wherever on screen the ray starts. The other noise, hand tremor, does not go
+away either: the second half of this very gesture is *hold the finger and pan
+the camera*. And the filter's lag (τ = 0.03 s) never reaches the committed
+point, because release pins the raw last hit, not the smoothed trail — the
+filter is paid for by the eye, not by the measurement.
 
 ### Every sample carries how the measurement happened
 

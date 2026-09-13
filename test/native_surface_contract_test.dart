@@ -1316,8 +1316,11 @@ void main() {
     });
 
     test('ngoại suy chỉ được NHẬN khi nó tự khai được quãng vượt biên', () {
+      // Thân tia dời sang [raycast(from:)] ở `0.14.0`, khi quãng kéo cần bắn
+      // từ một điểm màn bất kỳ. Luật không đổi một chữ, chỉ đổi chỗ canh —
+      // `raycastFromReticle` nay chỉ còn là lời gọi ấy với điểm mặc định.
       final body = _withoutComments(
-        _swiftMethodBody(sessionSource, 'private func raycastFromReticle('),
+        _swiftMethodBody(sessionSource, 'private func raycast(from'),
       ).replaceAll(RegExp(r'\s+'), ' ');
 
       expect(
@@ -1785,6 +1788,7 @@ void main() {
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
           'grabbedPointIndex == lastGrabbedPointIndex, '
+          'grabAimLocked == lastGrabAimLocked, '
           'aimOvershootMm == lastAimOvershootMm, '
           'aimRayAngleDeg == lastAimRayAngleDeg, '
           'aimPlaneId == lastAimPlaneId {',
@@ -1919,6 +1923,7 @@ void main() {
           'limitedReason == lastLimitedReason, aimTarget == lastAimTarget, '
           'featureCensus == lastFeatureCensus, '
           'grabbedPointIndex == lastGrabbedPointIndex, '
+          'grabAimLocked == lastGrabAimLocked, '
           'aimOvershootMm == lastAimOvershootMm, '
           'aimRayAngleDeg == lastAimRayAngleDeg, '
           'aimPlaneId == lastAimPlaneId {',
@@ -2589,6 +2594,259 @@ void main() {
     });
   });
 
+  group('bắn tia theo một điểm màn tuỳ ý', () {
+    test('lệnh khớp từng chữ giữa Swift và Dart', () {
+      expect(pluginSource, contains('case "dragTo":'));
+      expect(dartSource, contains("invokeMethod<String>('dragTo'"));
+    });
+
+    // **Tâm màn vẫn là mặc định, và ba đường cũ không đổi một chữ.** Lượt này
+    // thêm một lối, không đổi lối cũ: một cú bấm `placePoint` hay `movePoint`
+    // vẫn chấm ở chỗ tâm ngắm đang chỉ, bất kể có quãng kéo nào đang mở và ngón
+    // tay đang ở đâu trên màn.
+    test('placePoint và movePoint vẫn bắn từ TÂM màn', () {
+      for (final signature in [
+        'func placePoint()',
+        'func movePoint(at index: Int)',
+      ]) {
+        final than = _withoutComments(
+          _swiftMethodBody(sessionSource, signature),
+        );
+        expect(
+          than,
+          contains('raycastFromReticle()'),
+          reason:
+              '`$signature` là một cú BẤM, và cú bấm ở gói này luôn ở tâm màn. '
+              'Cho nó đi theo điểm ngắm của quãng kéo là để một cú bấm chấm '
+              'vào chỗ ngón tay đang giữ thay vì chỗ tâm ngắm đang hứa.',
+        );
+      }
+    });
+
+    test('tâm ngắm đi qua CÙNG phép tính điểm mà ngón tay đi qua', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func raycastFromReticle()'),
+      );
+      expect(
+        than,
+        contains('AimPoint.centre(of: sceneView.bounds)'),
+        reason:
+            'Tâm màn là một điểm ngắm như mọi điểm ngắm khác, chỉ là điểm mặc '
+            'định. Tính nó tại chỗ bằng `bounds.midX` là bản chép thứ hai của '
+            'một luật, và bản chép ấy không có ca kiểm số nào.',
+      );
+      expect(
+        than,
+        contains('raycast(from:'),
+        reason: 'một đường bắn tia, không phải hai',
+      );
+    });
+
+    // **Một chỗ kẹp, một luật.** Mọi lượt bắn tia — tâm ngắm lẫn ngón tay — đi
+    // qua cùng một hàm, nên không có đường nào để một toạ độ ngoài khung lọt
+    // tới `raycastQuery`. Kẹp ở chỗ GỌI thay vì ở đây là mở đúng một khe: ai đó
+    // thêm một chỗ gọi thứ ba và quên kẹp, và chỗ ấy hỏng câm — tia vẫn trả về
+    // một điểm, chỉ là điểm suy ra trên một mặt phẳng camera không hề thấy.
+    test('kẹp vào khung nằm ở CHỖ BẮN, không ở chỗ gọi', () {
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func raycast(from'),
+        ),
+        contains('AimPoint.clamped(screenPoint, into: sceneView.bounds)'),
+        reason:
+            'Mọi lượt bắn — tâm ngắm lẫn ngón tay — đi qua đúng hàm này, nên '
+            'kẹp ở đây là không có đường nào để một toạ độ ngoài khung tới được '
+            '`raycastQuery`. Kẹp ở chỗ GỌI là mở đúng một khe cho chỗ gọi thứ '
+            'ba nào đó quên kẹp, và chỗ ấy hỏng CÂM: tia vẫn trả về một điểm.',
+      );
+
+      // Điểm được CẤT là điểm THÔ, không phải điểm đã kẹp. Khung đổi cỡ được
+      // giữa hai khung hình (xoay máy, chia đôi màn trên iPad), nên một điểm đã
+      // kẹp theo khung cũ là một điểm nằm sai chỗ trong khung mới — và nó nằm
+      // sai một cách câm, vì nó vẫn là một toạ độ hợp lệ trong khung mới.
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'func dragTo('),
+      );
+      expect(than, contains('state.aim = point'));
+      expect(
+        than,
+        isNot(contains('state.aim = AimPoint')),
+        reason:
+            'Phép kẹp chạy ở mỗi lượt bắn, theo khung của đúng lượt ấy — không '
+            'chạy một lần rồi cất kết quả đi.',
+      );
+
+      // Và không chỗ nào KHÁC tự kẹp để bắn: `stepDrag` đưa điểm thô cho
+      // `raycast(from:)` và để hàm ấy lo.
+      expect(
+        _withoutComments(
+          _swiftMethodBody(sessionSource, 'private func stepDrag('),
+        ),
+        isNot(contains('AimPoint.clamped(')),
+      );
+    });
+
+    // Đơn vị: **point**, cùng hệ với `bounds` và với `ArMeasureOverlay`. Đây là
+    // lượt hồi quy của `0.9.1` soi gương — bản ấy CHIA đầu ra cho
+    // `contentScaleFactor` và nhãn lệch một hệ số nguyên trên hai máy khác hệ
+    // số. Một phép nhân ở ĐẦU VÀO không lệch ở chỗ dễ thấy: nó chỉ bắn tia vào
+    // một chỗ khác trên cảnh, và trả về một toạ độ ba chiều hợp lệ ở chỗ ấy.
+    test('đường điểm ngắm KHÔNG đụng tới hệ số điểm ảnh', () {
+      for (final signature in [
+        'private func raycast(from',
+        'func dragTo(',
+        'private func stepDrag(',
+      ]) {
+        final than = _withoutComments(
+          _swiftMethodBody(sessionSource, signature),
+        );
+        for (final forbidden in [
+          'contentScaleFactor',
+          'nativeScale',
+          'UIScreen',
+        ]) {
+          expect(
+            than,
+            isNot(contains(forbidden)),
+            reason:
+                '`$signature` chạm `$forbidden`. Toạ độ điểm ngắm ở đơn vị '
+                'POINT từ đầu tới cuối: `sceneView.bounds` là point, phép '
+                'chiếu lên lớp phủ là point, và con số app gửi xuống phải cùng '
+                'hệ với chúng.',
+          );
+        }
+      }
+      expect(
+        _withoutComments(pluginSource),
+        isNot(contains('contentScaleFactor')),
+        reason: 'kênh lệnh cũng không được đổi đơn vị trên đường đi',
+      );
+    });
+
+    // **Điểm ngắm sống và chết CÙNG quãng nắm.** Đây là lời đáp cho câu hỏi
+    // "ai giữ nó giữa các khung": không ai giữ riêng cả — nó là một trường của
+    // `ArDragState`, nên `drag = nil` xoá nó, và mọi đường buông (kể cả những
+    // đường gói TỰ buông) đã đi qua đúng chỗ ấy.
+    //
+    // Lối kia — một thuộc tính của phiên, đặt bằng một lệnh `aimAt` riêng — cần
+    // một đường XOÁ riêng, và đường xoá ấy phải được nhớ ở sáu chỗ buông. Quên
+    // một chỗ là quãng kéo SAU thừa hưởng điểm ngắm của quãng trước: đầu mút
+    // nhảy tới chỗ ngón tay đã buông từ lâu, ngay khung hình đầu tiên.
+    test('điểm ngắm nằm TRONG trạng thái nắm, không phải một biến của phiên',
+        () {
+      final sach = _withoutComments(sessionSource);
+
+      expect(
+        RegExp(r'var aim: CGPoint\?').allMatches(sach).length,
+        1,
+        reason:
+            'Đúng MỘT chỗ giữ điểm ngắm trong cả tệp. Hai chỗ là hai nguồn sự '
+            'thật, và chúng lệch nhau ở đúng những đường gói tự buông.',
+      );
+      expect(
+        _withoutComments(_swiftStructBody(sessionSource, 'ArDragState')),
+        contains('var aim: CGPoint?'),
+        reason:
+            'và chỗ ấy là `ArDragState` — cùng vòng đời với quãng nắm, nên nó '
+            'không có cách nào sống sót qua một cú buông.',
+      );
+    });
+
+    // Hai điểm khác nhau trên màn là hai tia khác nhau — theo định nghĩa, không
+    // phải do cẩu thả. Lời cấm cũ ("đừng bắn tia lần thứ hai trong một khung")
+    // vẫn nguyên vẹn và vẫn được canh ở nhóm trên; nó nói về tia TÂM NGẮM, và
+    // tia ấy vẫn chỉ bắn đúng một lần mỗi khung.
+    test('quãng kéo có điểm ngắm riêng thì bắn tia RIÊNG, mỗi khung hình', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func stepDrag('),
+      );
+
+      expect(
+        than,
+        contains('raycast(from: aim)'),
+        reason:
+            'Không có dòng này thì tham số điểm ngắm đi vào một chỗ không ai '
+            'đọc: `grabPoint(at:)` trả `grabbed`, app vẽ giao diện đang nắm, và '
+            'đầu mút vẫn bám tâm màn. Không lỗi nào nổ.',
+      );
+      expect(
+        than,
+        isNot(contains('raycastFromReticle')),
+        reason:
+            'Quãng kéo KHÔNG có điểm ngắm riêng thì ăn theo lượt dò đã bắn cho '
+            'khung này — kết quả truyền vào qua `probe`.',
+      );
+    });
+
+    // Bộ lọc GIỮ NGUYÊN cho cả hai lối kéo, và lý do nằm ở nguồn nhiễu chứ
+    // không ở cái gì đang chọn điểm màn: hai khung liên tiếp trả về hai BỀ MẶT
+    // khác nhau (ba tầng tia được thử theo thứ tự), nên điểm nhảy hàng centimét
+    // trong khi cả tay LẪN ngón đứng yên. Bỏ lọc vì "ngón trượt có chủ ý" là
+    // chữa một nguồn nhiễu không phải nguồn nhiễu chính.
+    test('kéo theo ngón vẫn đi qua bộ lọc, và vẫn KHÔNG quãng ôm', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func stepDrag('),
+      );
+
+      expect(
+        than,
+        contains('state.filter.hit('),
+        reason:
+            'Một đường bơm mẫu cho cả hai lối kéo. Hai đường là hai độ mượt '
+            'khác nhau cho cùng một cử chỉ, và người dùng là người duy nhất '
+            'thấy chúng cạnh nhau.',
+      );
+      expect(
+        than,
+        isNot(contains('.miss(')),
+        reason:
+            'Tia trượt thì đầu mút ĐỨNG YÊN, vô thời hạn — luật cũ, không đổi.',
+      );
+    });
+
+    // Cái cờ này tồn tại RIÊNG vì từ `0.14.0` `aimLocked` và nó nói về HAI tia
+    // khác nhau. Không có nó thì app chỉ còn một cách biết "đầu mút đang bị kéo
+    // qua chỗ trống": đọc `aimLocked` — một lời khai về tâm màn, tức là về một
+    // chỗ khác hẳn chỗ ngón tay đang giữ.
+    test('cờ khoá của tia KÉO đi lên Dart, và Dart đọc', () {
+      expect(sessionSource, contains('"grabAimLocked"'));
+      expect(dartSource, contains("raw['grabAimLocked']"));
+    });
+
+    // Bộ nén của `publish` neo vào "số đo đổi quá 0,5 mm". Cờ này đổi ĐƯỢC
+    // trong khi số đo không đổi một chút nào — ngón giữ yên, đầu mút đứng yên,
+    // và tia trượt vì một vệt sáng đi qua. Không nằm trong điều kiện gộp thì nó
+    // đóng băng ở giá trị của lượt trước, và app tô xám một đầu mút đang khoẻ
+    // (hoặc tệ hơn: tô sáng một đầu mút đang trôi).
+    test('cờ khoá của tia KÉO nằm trong bộ nén của publish', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func publish('),
+      );
+
+      expect(than, contains('grabAimLocked == lastGrabAimLocked'));
+      expect(than, contains('lastGrabAimLocked = grabAimLocked'));
+    });
+
+    // Quãng kéo ĂN THEO tâm ngắm phải ép lượt dò chạy mỗi khung hình — luật cũ,
+    // và nó vẫn đúng. Quãng kéo có tia RIÊNG thì không: nó tự bắn mỗi khung ở
+    // `stepDrag`, nên ép thêm tâm ngắm là hai lượt raycast mỗi khung hình cho
+    // một cái cờ boolean mà mắt không đọc nổi quá mười lần mỗi giây.
+    test('chỉ quãng kéo ăn theo tâm ngắm mới ép nhịp mỗi khung', () {
+      final than = _withoutComments(
+        _swiftMethodBody(sessionSource, 'private func probeReticle('),
+      );
+
+      expect(
+        RegExp(r'drag\?\.aim == nil').hasMatch(than),
+        isTrue,
+        reason:
+            'Lời gác `drag != nil` trần ép tâm ngắm dò mỗi khung hình suốt mọi '
+            'quãng kéo, kể cả quãng đã có tia riêng — hai tia mỗi khung, và '
+            'lượt thứ hai không ai đọc.',
+      );
+    });
+  });
+
   group('chụp ảnh cảnh', () {
     // Cả bảy ca dưới đây canh cùng một dạng hỏng: ảnh VẪN ra, tệp VẪN có, và
     // thứ sai chỉ lộ ra khi mở ảnh lên xem trên một máy khác.
@@ -2784,4 +3042,28 @@ String _swiftMethodBody(String source, String signature) {
 ///   khi ca canh phép chia `contentScaleFactor` đổi chiều.
 String _withoutComments(String swift) {
   return swift.replaceAll(RegExp(r'//.*'), '');
+}
+
+/// Thân của một `struct` ở mức ngoài cùng — từ dòng khai tới dấu `}` ở cột 0.
+///
+/// Tách khỏi [_swiftMethodBody] vì chúng đóng ở hai cột khác nhau: một hàm của
+/// lớp đóng ở `\n  }`, còn một `struct` ở mức tệp đóng ở `\n}`. Dùng nhầm hàm
+/// kia ở đây thì lát cắt dừng ở dấu đóng của trường ĐẦU TIÊN có thân, và mọi
+/// `expect` sau đó xanh vì lát cắt quá ngắn để chứa thứ đang tìm.
+String _swiftStructBody(String source, String name) {
+  final start = source.indexOf('struct $name {');
+  expect(
+    start,
+    greaterThanOrEqualTo(0),
+    reason: 'không tìm thấy `struct $name` trong ArMeasureSession.swift',
+  );
+
+  final end = source.indexOf('\n}', start);
+  expect(
+    end,
+    greaterThan(start),
+    reason: 'không tìm được dấu đóng của `struct $name`',
+  );
+
+  return source.substring(start, end);
 }

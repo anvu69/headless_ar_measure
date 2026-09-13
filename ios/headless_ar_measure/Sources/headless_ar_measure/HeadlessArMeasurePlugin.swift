@@ -43,6 +43,16 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
   /// dọn hàng chết mỗi lần đụng tới sổ.
   private var views: [Int64: WeakView] = [:]
 
+  /// Điểm ngắm đọc được từ một lệnh — xem [aim(from:)].
+  private enum ArAimArgument {
+    /// Không có khoá `x` lẫn `y`: lời gọi của một bản Dart cũ, hoặc một lệnh
+    /// nắm cố ý không kèm điểm. Hợp lệ.
+    case absent
+    case point(CGPoint)
+    /// Có khoá mà không đọc được thành hai số hữu hạn. Hai đầu dây lệch pha.
+    case malformed
+  }
+
   private final class WeakView {
     weak var value: ArMeasurePlatformView?
     init(_ value: ArMeasurePlatformView) { self.value = value }
@@ -138,7 +148,34 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
         result(ArMeasureGrabResult.notReady.rawValue)
         return
       }
-      result((session(for: call)?.grabPoint(at: index) ?? .notReady).rawValue)
+      // Điểm ngắm là TUỲ CHỌN, khác hẳn `index`: vắng nó là lời gọi của mọi bản
+      // trước `0.14.0`, và ở đó quãng kéo bám tâm ngắm. Nhưng gửi được MỘT nửa
+      // (chỉ `x`, hay một `y` không đọc nổi) thì không: đó là hai đầu dây lệch
+      // pha, và nắn nó thành "không có điểm ngắm" là lặng lẽ đổi cử chỉ của
+      // người dùng thành một cử chỉ khác.
+      let aim: CGPoint?
+      switch Self.aim(from: call) {
+      case .absent: aim = nil
+      case .point(let point): aim = point
+      case .malformed:
+        result(ArMeasureGrabResult.notReady.rawValue)
+        return
+      }
+      result(
+        (session(for: call)?.grabPoint(at: index, aim: aim) ?? .notReady).rawValue)
+
+    case "dragTo":
+      // Ở đây điểm ngắm là BẮT BUỘC — lệnh này không có nghĩa nào khác. Thiếu
+      // nó cũng là `.notReady`, cùng một luật với `index` của `movePoint`: một
+      // toạ độ không đọc được là chuyện của KÊNH, không phải một lời khai về
+      // việc phiên có đang nắm gì hay không. Trả `.notGrabbing` ở đó là nói dối
+      // app về trạng thái của phiên, và app tin thì nó bỏ luôn quãng kéo đang
+      // chạy.
+      guard case .point(let point) = Self.aim(from: call) else {
+        result(ArMeasureDragResult.notReady.rawValue)
+        return
+      }
+      result((session(for: call)?.dragTo(point) ?? .notReady).rawValue)
 
     case "releasePoint":
       // KHÔNG mang chỉ số, và đó là chủ đích: phiên đang nắm đúng một đầu và
@@ -234,6 +271,35 @@ public class HeadlessArMeasurePlugin: NSObject, FlutterPlugin {
     guard let args = call.arguments as? [String: Any] else { return nil }
     guard let raw = args["index"] as? NSNumber else { return nil }
     return raw.intValue
+  }
+
+  /// Điểm ngắm của một lệnh, đọc từ hai khoá `x`/`y`.
+  ///
+  /// **Đơn vị là POINT**, và không có phép nhân hay chia nào trên đường này:
+  /// `sceneView.bounds` là point, phép chiếu bắn lên kênh lớp phủ là point, và
+  /// con số app gửi xuống phải cùng hệ với chúng. Đây là lượt hồi quy của
+  /// `0.9.1` soi gương — bản ấy CHIA đầu ra cho `contentScaleFactor` và nhãn
+  /// lệch đúng một hệ số nguyên trên hai máy khác hệ số. Một phép đổi đơn vị ở
+  /// ĐẦU VÀO thì không lệch ở chỗ dễ thấy: nó chỉ bắn tia vào một chỗ khác trên
+  /// cảnh và trả về một toạ độ ba chiều hợp lệ ở chỗ ấy.
+  ///
+  /// Ba nhánh, không phải `CGPoint?`: "không gửi" và "gửi hỏng" là hai chuyện
+  /// khác nhau. Vắng cả hai khoá là một lời gọi HỢP LỆ của bản cũ; gửi một nửa
+  /// là hai đầu dây lệch pha, và nắn nó về "vắng" là lặng lẽ đổi cử chỉ.
+  ///
+  /// Không hữu hạn bị coi là hỏng ngay tại cửa. `AimPoint` chặn lần thứ hai ở
+  /// tầng phiên, và hai lớp chặn ở đây là cố ý: một `NaN` đi tiếp vào
+  /// `raycastQuery` ra một lượt trượt trông y hệt một bề mặt xấu.
+  private static func aim(from call: FlutterMethodCall) -> ArAimArgument {
+    guard let args = call.arguments as? [String: Any] else { return .absent }
+    let rawX = args["x"]
+    let rawY = args["y"]
+    if rawX == nil, rawY == nil { return .absent }
+    guard let x = (rawX as? NSNumber)?.doubleValue,
+      let y = (rawY as? NSNumber)?.doubleValue,
+      x.isFinite, y.isFinite
+    else { return .malformed }
+    return .point(CGPoint(x: x, y: y))
   }
 
   private func session(for call: FlutterMethodCall) -> ArMeasureSession? {

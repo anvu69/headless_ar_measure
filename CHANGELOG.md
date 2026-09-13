@@ -1,3 +1,225 @@
+## 0.14.0
+
+A grab can fire its ray from **any screen point**, not only the middle of the
+screen. Two additions — an optional `at:` on `grabPoint`, and `dragTo` — plus one
+new sample field, `grabAimLocked`. Nothing that existed changes behaviour.
+
+### The gesture that was half-built
+
+`0.11.0` gave the package a span: grab an endpoint, it follows the crosshair
+every frame, let go and it commits. From a real device, the gesture people
+actually expect:
+
+> aim the crosshair at the endpoint, then **hold your finger on the screen and
+> drag** to a new place — or hold the finger still and **pan the camera**, and
+> the endpoint follows that too.
+
+The second half worked. The first half had nowhere to land: `raycastFromReticle`
+built its point as `CGPoint(x: bounds.midX, y: bounds.midY)`, a hard-coded
+centre, and no call could say otherwise.
+
+The app hit this and deliberately did **not** patch around it in Dart, which was
+the right call and is worth writing down, because it is the obvious shortcut:
+
+> Where an endpoint belongs is the intersection of a ray with a real plane in the
+> scene. Deriving it from how far the finger slid is a two-dimensional
+> interpolation standing in for a three-dimensional problem: correct when the
+> plane faces the ray, wrong in proportion to the angle, and **worst at exactly
+> the grazing shot** — the case this screen already ships a warning for.
+
+That warning is `aimRayAngleDeg`, shipped in `0.7.0`. A Dart-side interpolation
+would be least accurate precisely where the package spent a version telling the
+user to be careful.
+
+### The surface
+
+```dart
+Future<ArMeasureGrabResult> grabPoint(int index, {Offset? at});
+Future<ArMeasureDragResult>  dragTo(Offset at);
+```
+
+```dart
+// onPanStart, on the handle the app drew from ArMeasure.overlay
+await controller?.grabPoint(1, at: details.localPosition);
+// onPanUpdate — as often as the finger moves
+await controller?.dragTo(details.localPosition);
+// onPanEnd
+await controller?.releasePoint();
+```
+
+`ArMeasureDragResult` has four cases: `aimed`, `clamped`, `notGrabbing`,
+`notReady`. `ArMeasureSample` gains `grabAimLocked` (a `bool`, `false` when
+absent).
+
+`at: null` — the default, and the wire shape of every version before this one —
+means *ride the crosshair*, which is exactly what `0.11.0` did. The `x`/`y` keys
+are simply absent from that call, so an older native build reads it unchanged.
+
+### Units: points, and a test that can tell
+
+**`at` and `dragTo` take points (logical pixels), in the AR surface's own
+coordinate space, origin top-left** — the same space and unit as
+`ArMeasureOverlay.pointA`/`pointB`, so an `Offset` read off the overlay can be
+handed straight back. No `devicePixelRatio`, anywhere on the path.
+
+This needed saying out loud because the package has already paid for it once. In
+`0.9.1` the *output* projection was divided by `contentScaleFactor`, the
+measurement label hung off the segment by an integer factor on an iPhone (@3x)
+and an iPad (@2x), and the fix was to put the whole file in points. A wrong unit
+on the *input* is that bug in a mirror, and it is worse: it does not misplace
+anything by a visible integer factor. It just fires the ray somewhere else in the
+scene and returns a completely valid three-dimensional coordinate there.
+
+So the unit is pinned by a numeric test, not by a comment. `AimPoint.swift`
+imports only `Foundation` and `CoreGraphics` — the same trick `PlaneOvershoot`
+and `VideoFormatChoice` use — so `swiftc` compiles and runs it on the build
+machine. The cases that matter are built on one device's two coordinate systems:
+402×874 points is an iPhone 16; the same screen is 1206×2622 pixels.
+
+* `(390, 860)` is **inside** a 402×874 frame and comes back untouched. Read as
+  pixels on an @3x screen that finger would be at `(130, 286.7)` — somewhere
+  else entirely, and nothing in the two numbers would say so.
+* `(1200, 2600)` — the pixel coordinate of roughly that same spot — is **outside**
+  and clamps hard to the corner. Green there while red above means somebody
+  multiplied a scale factor in.
+
+### The test that is not blind
+
+The obvious test for "fire from a given point" uses the centre of the screen, and
+it is worthless: its answer is identical to the answer for *ignoring the
+parameter entirely*. The two behaviours agree at exactly one point, and that
+point is the one such a test picks. So the case that earns its place fires from
+`(120, 200)` on a 402×874 frame and asserts the result differs from the centre —
+`(201, 437)` — as well as equalling the input.
+
+### Off the edge: clamp, not miss
+
+A finger slides off the edge of the surface mid-drag; a pan gesture keeps
+reporting after the pointer leaves the widget. Three options, and the one that
+looks most honest is the worst.
+
+* **Treat it as a miss** — the endpoint freezes. That kills the second half of
+  the gesture: a finger pinned at the edge can no longer drag the endpoint by
+  panning the camera, which is the thing the user asked for by name.
+* **Fire from where the finger actually is**, outside the viewport. The ray is
+  mathematically fine and points somewhere the camera **has never observed**, so
+  neither `.existingPlaneGeometry` nor `.estimatedPlane` has anything to hit. The
+  only tier left to answer is `.existingPlaneInfinite` — a detected plane
+  stretched past its own boundary — and it answers with a plausible coordinate on
+  a surface the camera cannot see. That is the failure the overshoot valve was
+  built for in `0.6.0`, invited in through the front door.
+* **Clamp to the edge.** The ray still passes through a pixel the camera *is*
+  looking at, so all three tiers stay honest; the endpoint pins at the edge and
+  still tracks when you pan; and when the finger comes back on screen the point
+  resumes from the edge instead of jumping.
+
+Clamped it is, and `dragTo` returns `clamped` rather than doing it silently — the
+app has no other way to learn it, because the overlay reports where the endpoint
+*is* after projection, not where the finger is pointing.
+
+The clamp lives in `raycast(from:)`, the one function every ray now goes through,
+rather than at the call sites. One place, one rule: there is no route by which an
+out-of-frame coordinate reaches `raycastQuery`. And the stored aim point is the
+**raw** one — the frame can change size between frames (rotation, Split View), so
+a point clamped against the old frame is a point in the wrong place in the new
+one, silently, because it is still a valid coordinate.
+
+`AimPoint` deliberately does not use `CGRect.contains` for its inside test:
+that is a half-open interval, so a finger exactly on the last row would be
+reported as clamped while the clamp changed nothing. It also reads `bounds.size`
+rather than `bounds.width`, because `CGRect.width` quietly returns the absolute
+value — a negative extent is not a viewport, and normalising one into a viewport
+is inventing a screen to fire into.
+
+### Who holds the point between frames
+
+The app proposed `grabPoint(index, at:)` alongside a separate `aimAt(Offset?)`.
+The first half is kept. The second is not, and the reason is the lifetime.
+
+`aimAt` is a property of the **session**: a remembered value with its own
+lifetime, which needs its own erase path, which then has to be remembered at
+seven release sites — `releasePoint`, `stop`, `pause`, `undoPoint`, `movePoint`,
+`sessionWasInterrupted`, `clearAnchors`. Miss one and the *next* span inherits
+the *previous* finger's position: the user grabs the other endpoint and it jumps
+to where a finger let go a minute ago, on the very first frame, before they have
+moved at all.
+
+`dragTo` writes into `ArDragState` instead. `drag = nil` erases it, and every
+release route — including the ones the package takes by itself — already runs
+that line. There is no rule to remember because there is no way to forget. There
+is also no way back to the crosshair mid-span, on purpose: a drag that snaps to
+the middle of the screen is a move nobody asked for, and letting go and grabbing
+again without `at` says what actually happened.
+
+### Two rays, and why that is not the old sin
+
+`0.11.0` wrote a rule into the drag step: **do not fire a second ray in the same
+frame** — the reticle probe already fired one, and two rays mean the point goes
+one place while the crosshair promises another. That rule is intact and still
+tested. It is about firing at the *same* screen point twice and letting the two
+answers drift.
+
+A finger that is not at the centre is a genuinely different point, so it is a
+genuinely different ray. `stepDrag` now fires its own — through `raycast(from:)`,
+never `raycastFromReticle()` — and only when the span has an aim point;
+otherwise it consumes the probe exactly as before.
+
+That would cost two raycasts a frame, so the probe's every-frame gate now asks
+whether the span actually rides the crosshair. A span with its own aim point lets
+the crosshair fall back to its 10 Hz sampling grid — nothing reads a per-frame
+crosshair during a finger drag anyway, and a flag the eye cannot follow past ten
+times a second does not need sixty samples.
+
+### `grabAimLocked` is a new field because it is a new ray
+
+Until now the drag ray *was* the reticle ray, so `aimLocked` reported both and
+the `0.11.0` notes said as much: *"the app does not lose the 'ray is missing'
+signal — it goes out through `aimTarget`/`aimLocked`."* The moment a span has its
+own aim point that sentence stops being true. `aimLocked` is about the middle of
+the screen — where `placePoint()` would land — and the span is somewhere else.
+
+Reading `aimLocked` for a finger-driven span greys out a healthy endpoint, or
+worse, lights up one being dragged across nothing. So the flag is its own field,
+set by the drag step, `false` when nothing is held, and sent only when true (same
+shape as `aimLocked`).
+
+It is in `publish`'s coalescing condition, and it has to be, for a reason
+`grabbedPointIndex` next to it does not share: that index changes twice per span
+and both routes call `publish(force: true)`. This flag changes *mid*-span, on
+frames where nobody forces anything — finger still, endpoint still (a missed ray
+moves nothing), `mm` not budging half a millimetre — and the only thing that
+changed is the claim that the ray is missing. Left out of the condition it would
+freeze at the previous value.
+
+### What did not change
+
+`placePoint`, `movePoint`, the crosshair fields, `aimLocked`, the release rules,
+the provenance rules, the wire shape of `grabPoint(index)`. The smoothing filter
+is unchanged for both kinds of span, and that was a decision, not an oversight:
+
+The noise the filter exists to kill is **tier switching** — three ray tiers tried
+in order, so two consecutive frames can return two different surfaces, both
+reporting a hit, and the point jumps centimetres while the hand *and* the finger
+sit still. Where on screen the ray starts has nothing to do with it. The other
+noise, hand tremor, does not go away either — the second half of this very
+gesture is *hold the finger and pan the camera*, which is the tremor case. And
+the filter's cost, τ = 0.03 s of lag, never reaches the committed point: release
+pins `ArDragState.hit`, the raw last hit, not the smoothed trail. The filter is
+paid for by the eye, not by the measurement.
+
+`stepDrag` still never calls `filter.miss(at:)`, so a losing ray still leaves the
+endpoint standing still indefinitely rather than snapping back to the anchor.
+
+### Not verified on a device
+
+Everything above is `flutter test` and `swiftc -typecheck`. No hand has held an
+iPad and dragged an endpoint with a finger. Three claims are waiting on that:
+whether clamping at the edge reads as "pinned" or as "broken"; whether the
+filter's lag is visible when the finger moves fast (it was measured for a panning
+device, not a sliding finger); and whether one `dragTo` per pan callback is cheap
+enough in practice, which is argued here from what the call does — a struct field
+write — and not from a measurement.
+
 ## 0.13.0
 
 `captureFrame()` now photographs the **scene**, not a bare camera frame. No API

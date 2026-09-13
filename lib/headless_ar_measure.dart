@@ -196,6 +196,39 @@ enum ArMeasureReleaseResult {
   notReady,
 }
 
+/// Chuyện gì đã xảy ra với một lời gọi [ArMeasureController.dragTo].
+enum ArMeasureDragResult {
+  /// Đã nhận. Từ khung hình kế tiếp, tia của quãng kéo bắn từ chỗ ấy.
+  aimed,
+
+  /// Đã nhận, nhưng điểm nằm **ngoài** bề mặt AR và đã bị kẹp vào biên.
+  ///
+  /// Ngón tay trượt ra ngoài mép màn giữa một quãng kéo là chuyện thường, và
+  /// gói KẸP chứ không coi là trượt — xem [ArMeasureController.dragTo]. Đầu mút
+  /// vì thế ghim ở mép và **vẫn đi theo khi lia camera**, nhưng nó không còn
+  /// đứng dưới ngón tay nữa.
+  ///
+  /// Tách khỏi [aimed] vì app không có đường nào khác để biết chuyện đó:
+  /// [ArMeasure.overlay] khai chỗ đầu mút ĐANG ĐỨNG sau khi chiếu, không khai
+  /// chỗ ngón tay đang chỉ tới.
+  clamped,
+
+  /// Không có quãng nắm nào đang mở, nên không có điểm ngắm nào để dời.
+  ///
+  /// Gói tự buông ở những đường app không gây ra — xem
+  /// [ArMeasureReleaseResult.notGrabbing]. Đọc
+  /// [ArMeasureSample.grabbedPointIndex] để biết trước.
+  notGrabbing,
+
+  /// Phiên đã dừng, bề mặt AR chưa có kích thước, hoặc toạ độ không đọc được.
+  ///
+  /// Cũng là giá trị của một kênh câm — thiếu plugin, view đã chết, hay một bản
+  /// Swift **cũ hơn lệnh này**, nơi `dragTo` rơi vào `FlutterMethodNotImplemented`.
+  /// Không phải [notGrabbing], cùng một luật với
+  /// [ArMeasureReleaseResult.notReady].
+  notReady,
+}
+
 /// Một số đo khoảng cách.
 class ArMeasurement {
   const ArMeasurement({
@@ -580,6 +613,7 @@ class ArMeasureSample {
     this.aimRayAngleDeg,
     this.aimPlaneId,
     this.grabbedPointIndex,
+    this.grabAimLocked = false,
     this.diagnostics,
   });
 
@@ -750,6 +784,32 @@ class ArMeasureSample {
   /// `null` cũng là đường của một bản Swift cũ hơn cặp lệnh này — và ở đó `null`
   /// là sự thật, vì bản ấy không có đường nào để nắm.
   final int? grabbedPointIndex;
+
+  /// Tia mà đầu mút ĐANG NẮM đi theo có trúng bề mặt ở khung hình vừa rồi
+  /// không.
+  ///
+  /// `false` khi không nắm gì — và cũng `false` ở một bản Swift cũ hơn trường
+  /// này, nơi không có đường nào để kéo theo một điểm ngắm riêng.
+  ///
+  /// **Đừng đọc [aimLocked] thay cho trường này.** Từ `0.14.0` hai cờ ấy nói về
+  /// **hai tia khác nhau** ngay khi quãng kéo có điểm ngắm riêng
+  /// ([ArMeasureController.dragTo]): [aimLocked] nói về TÂM MÀN — chỗ cú bấm
+  /// [ArMeasureController.placePoint] sẽ tới — còn cờ này nói về chỗ đầu mút
+  /// đang bị kéo đi theo. Ngón tay không ở giữa màn thì hai câu ấy khác nhau, và
+  /// đọc nhầm là tô xám một đầu mút đang khoẻ, hoặc tệ hơn, tô sáng một đầu mút
+  /// đang trôi qua chỗ trống.
+  ///
+  /// Hai cờ ấy trùng nhau ở đúng một cảnh, và đó là mặc định: quãng nắm mở bằng
+  /// [ArMeasureController.grabPoint] **không kèm** `at`, nơi đầu mút bám theo
+  /// chính tia tâm ngắm.
+  ///
+  /// KHÔNG bị gác theo [status], cùng lối với [grabbedPointIndex] và vì cùng lẽ:
+  /// nó nói về quãng nắm, một trạng thái của PHIÊN.
+  ///
+  /// **`false` không có nghĩa là đầu mút đã rơi.** Tia trượt thì đầu mút đứng
+  /// yên, vô thời hạn — *một cái thước dây không rơi mất đầu khi tay che mất
+  /// vạch*. Cờ này chỉ nói rằng nó đang đứng yên chứ không đang đi theo.
+  final bool grabAimLocked;
 
   /// Điều kiện mỗi điểm được chấm — xem [ArMeasureDiagnostics].
   ///
@@ -1160,6 +1220,12 @@ class ArMeasure {
       grabbedPointIndex: raw['grabbedPointIndex'] is int
           ? raw['grabbedPointIndex']! as int
           : null,
+      // Thiếu hay sai kiểu về `false`, y như `aimLocked` — và mặc định ấy là
+      // mặc định AN TOÀN: nó nói "tia của quãng kéo không trúng gì", nên app
+      // rơi về lời nhắc chĩa vào chỗ có vân thay vì hứa rằng đầu mút đang bám.
+      grabAimLocked: raw['grabAimLocked'] is bool
+          ? raw['grabAimLocked']! as bool
+          : false,
       diagnostics: _parseDiagnostics(raw['diagnostics']),
     );
   }
@@ -1443,6 +1509,19 @@ ArMeasureGrabResult _parseGrabResult(Object? raw) {
   };
 }
 
+ArMeasureDragResult _parseDragResult(Object? raw) {
+  return switch (raw) {
+    'aimed' => ArMeasureDragResult.aimed,
+    'clamped' => ArMeasureDragResult.clamped,
+    'notGrabbing' => ArMeasureDragResult.notGrabbing,
+    'notReady' => ArMeasureDragResult.notReady,
+    // Không đọc được đổ về `notReady`, KHÔNG về `notGrabbing`: cùng một luật
+    // với [_parseReleaseResult]. Đây cũng là đường của một bản Swift cũ hơn
+    // lệnh này, nơi kênh trả về `FlutterMethodNotImplemented`.
+    _ => ArMeasureDragResult.notReady,
+  };
+}
+
 ArMeasureReleaseResult _parseReleaseResult(Object? raw) {
   return switch (raw) {
     'released' => ArMeasureReleaseResult.released,
@@ -1570,16 +1649,99 @@ class ArMeasureController {
   /// [ArMeasureSample.grabbedPointIndex], vì gói tự buông ở những đường app
   /// không gây ra.
   ///
+  /// **[at] là chỗ trên màn mà tia của quãng kéo bắn ra từ đó** — toạ độ của
+  /// bề mặt AR, gốc ở góc trên bên trái, đơn vị **point** (logical pixel), cùng
+  /// hệ với [ArMeasureOverlay.pointA]/[ArMeasureOverlay.pointB]. Đừng nhân
+  /// `devicePixelRatio`.
+  ///
+  /// `null` — mặc định, và hành vi của mọi bản trước `0.14.0` — nghĩa là bám
+  /// theo **tâm màn**, ăn theo đúng lượt dò mà tâm ngắm đã chạy cho khung hình
+  /// ấy. Khác `null` thì quãng này bắn **tia riêng** ở mỗi khung hình, từ chỗ
+  /// ngón tay đang giữ, và [ArMeasureController.dragTo] dời chỗ ấy.
+  ///
+  /// Nhận điểm ngay ở đây chứ không bắt gọi thêm [dragTo] sau đó, và đó không
+  /// phải chuyện gõ cho ngắn: giữa hai lệnh ấy có ít nhất một khung hình, và ở
+  /// khung ấy đầu mút bám tâm màn. Người dùng chạm vào một đầu mút nằm ở góc
+  /// màn và thấy nó nháy về giữa rồi mới quay lại dưới ngón tay.
+  ///
+  /// **Điểm ngoài bề mặt AR bị KẸP vào biên**, không bị coi là trượt — xem
+  /// [dragTo].
+  ///
   /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureGrabResult.notReady].
-  Future<ArMeasureGrabResult> grabPoint(int index) async {
+  Future<ArMeasureGrabResult> grabPoint(int index, {Offset? at}) async {
     try {
       final raw = await ArMeasure._method.invokeMethod<String>('grabPoint', {
         'viewId': viewId,
         'index': index,
+        // Vắng hẳn hai khoá khi không có điểm, chứ không gửi `null`: đó là
+        // khuôn dây của mọi bản trước `0.14.0`, và một bản Swift cũ đọc lời gọi
+        // này y như trước.
+        if (at != null) ...{'x': at.dx, 'y': at.dy},
       });
       return _parseGrabResult(raw);
     } catch (_) {
       return ArMeasureGrabResult.notReady;
+    }
+  }
+
+  /// Dời **điểm ngắm** của quãng nắm đang mở tới [at].
+  ///
+  /// [at] ở toạ độ của bề mặt AR, gốc góc trên bên trái, đơn vị **point**
+  /// (logical pixel) — cùng hệ với [ArMeasureOverlay.pointA] và
+  /// [ArMeasureOverlay.pointB], nên một `Offset` đọc ra từ lớp phủ gửi thẳng
+  /// xuống đây được. Đừng nhân `devicePixelRatio` ở bất cứ đâu trên đường này.
+  ///
+  /// Cử chỉ mà cặp [grabPoint]/[dragTo]/[releasePoint] dựng lên, nguyên văn lời
+  /// đặt hàng: *"chĩa tâm vào đầu mút, rồi giữ ngón tay trên màn hình và kéo đi
+  /// để đến một điểm mới, hoặc vừa giữ ngón tay vừa lia camera thì đầu mút cũng
+  /// đi theo"*.
+  ///
+  /// **Đừng suy toạ độ ba chiều ở tầng Dart.** Chỗ một đầu mút phải đứng là
+  /// giao điểm của một TIA với một MẶT PHẲNG THẬT trong cảnh. Suy nó từ quãng
+  /// ngón đã trượt trên màn là dựng một phép nội suy hai chiều cho một bài toán
+  /// ba chiều: đúng ở cảnh mặt phẳng vuông góc với tia, sai dần theo góc, và
+  /// sai nhiều nhất ở đúng cảnh ngắm sượt — cảnh mà
+  /// [ArMeasureSample.aimRayAngleDeg] sinh ra để cảnh báo.
+  ///
+  /// **Gọi bao nhiêu lần cũng được, và app NÊN gọi mỗi lượt ngón tay nhích.**
+  /// Đây không phải cái bẫy mà [ArMeasureGrabResult] cấm ("đừng cài quãng nắm
+  /// bằng cách gọi [movePoint] liên tục"): lệnh ấy đắt vì mỗi lượt là một lượt
+  /// bắn tia cộng một lượt gỡ-và-thêm `ARAnchor` vào phiên ARKit. Lệnh này ghi
+  /// đúng một toạ độ vào trạng thái nắm — không bắn tia, không đụng anchor,
+  /// không bắn một mẫu nào lên [ArMeasure.samples]. Tia vẫn bắn đúng một lần
+  /// cho mỗi **khung hình**, dù app gọi tới đây mười lần giữa hai khung hay
+  /// không gọi lần nào.
+  ///
+  /// **Ngón trượt ra ngoài bề mặt AR thì điểm bị KẸP vào biên**, không bị coi
+  /// là trượt, và kết quả trả về [ArMeasureDragResult.clamped] để app biết. Hai
+  /// lý do, và lý do thứ hai mới là lý do thật:
+  ///
+  /// * Coi là trượt thì đầu mút đóng băng, và nửa sau của cử chỉ trên (*giữ
+  ///   ngón rồi lia camera*) chết theo — lia camera không còn kéo được gì.
+  /// * Một tia bắn từ NGOÀI khung nhìn đi về một hướng camera chưa bao giờ quan
+  ///   sát, nên hai tầng tia đầu không có gì để trúng. Thứ duy nhất còn trả lời
+  ///   là tầng ngoại suy — một mặt phẳng đã dò được kéo dài ra ngoài biên của
+  ///   nó — và nó trả lời bằng một toạ độ trông hoàn toàn hợp lệ, trên một mặt
+  ///   phẳng camera không hề thấy. Kẹp thì tia còn đi qua một chỗ camera đang
+  ///   nhìn, nên cả ba tầng còn trung thực.
+  ///
+  /// Gọi lúc không nắm gì là [ArMeasureDragResult.notGrabbing], và **không ghi
+  /// gì cả**: điểm ngắm sống và chết cùng quãng nắm, nên nó không có cách nào
+  /// sống sót sang quãng kéo sau. Không có đường quay lại tâm ngắm giữa chừng —
+  /// buông rồi nắm lại không kèm `at` là đủ, và nó nói đúng ra rằng đây là một
+  /// quãng kéo khác.
+  ///
+  /// Không bao giờ ném: một kênh chết cũng ra [ArMeasureDragResult.notReady].
+  Future<ArMeasureDragResult> dragTo(Offset at) async {
+    try {
+      final raw = await ArMeasure._method.invokeMethod<String>('dragTo', {
+        'viewId': viewId,
+        'x': at.dx,
+        'y': at.dy,
+      });
+      return _parseDragResult(raw);
+    } catch (_) {
+      return ArMeasureDragResult.notReady;
     }
   }
 
